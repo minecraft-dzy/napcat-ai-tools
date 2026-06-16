@@ -1,0 +1,32 @@
+{
+  "manifest_version": 2,
+  "version": "1.0.0",
+  "name": "NapCat AI Tools",
+  "description": "MaiBot NapCat 管理工具集",
+  "author": {
+    "name": "DZY",
+    "url": "https://github.com/DZY/napcat-ai-tools"
+  },
+  "license": "MIT",
+  "urls": {
+    "repository": "https://github.com/DZY/napcat-ai-tools",
+    "homepage": "https://github.com/DZY/napcat-ai-tools"
+  },
+  "host_application": {
+    "min_version": "1.0.0"
+  },
+  "sdk": {
+    "min_version": "2.0.0"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "api.call"
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  },
+  "id": "maimai.napcat-ai-tools"
+}

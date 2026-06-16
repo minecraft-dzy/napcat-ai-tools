@@ -1,0 +1,10 @@
+[plugin]
+enabled = true
+config_version = "1.0.0"
+
+[behavior]
+max_list_items = 30
+max_preview_chars = 4000
+
+[safety]
+allow_raw_action = true
