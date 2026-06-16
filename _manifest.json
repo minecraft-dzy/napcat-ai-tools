@@ -5,12 +5,12 @@
   "description": "MaiBot NapCat 管理工具集",
   "author": {
     "name": "DZY",
-    "url": "https://github.com/DZY/napcat-ai-tools"
+    "url": "https://github.com/minecraft-dzy/napcat-ai-tools"
   },
   "license": "MIT",
   "urls": {
-    "repository": "https://github.com/DZY/napcat-ai-tools",
-    "homepage": "https://github.com/DZY/napcat-ai-tools"
+    "repository": "https://github.com/minecraft-dzy/napcat-ai-tools",
+    "homepage": "https://github.com/minecraft-dzy/napcat-ai-tools"
   },
   "host_application": {
     "min_version": "1.0.0"
