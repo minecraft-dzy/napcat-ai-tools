@@ -35,7 +35,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.1.0", description="配置版本")
+    config_version: str = Field(default="1.1.1", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -338,7 +338,8 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                 return
             latest_tag = latest["tag_name"].lstrip("v")
             if latest_tag <= current_version:
-                asyncio.create_task(asyncio.to_thread(self._show_up_to_date_box, current_version))
+                if self._is_interactive_terminal():
+                    asyncio.create_task(asyncio.to_thread(self._show_up_to_date_box, current_version))
                 return
             skipped = (self.config.update.skipped_version or "").strip()
             if latest_tag == skipped:
@@ -346,6 +347,45 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
             asyncio.create_task(asyncio.to_thread(self._show_update_prompt, latest_tag, latest))
         except Exception:
             pass
+
+    @staticmethod
+    def _is_interactive_terminal() -> bool:
+        try:
+            return sys.stdout.isatty() and sys.stdin.isatty()
+        except Exception:
+            return False
+
+    @staticmethod
+    def _getch() -> str:
+        """跨平台单字符读取。Windows 用 msvcrt，Linux/macOS 用 termios，失败则回退到 input()。"""
+        if sys.platform == "win32":
+            try:
+                import msvcrt
+                ch = msvcrt.getch()
+                # 处理方向键等转义序列
+                if ch in (b'\x00', b'\xe0'):
+                    ch2 = msvcrt.getch()
+                    if ch2 == b'H': return '\x1b[A'   # Up
+                    if ch2 == b'P': return '\x1b[B'   # Down
+                    if ch2 == b'K': return '\x1b[D'   # Left
+                    if ch2 == b'M': return '\x1b[C'   # Right
+                    return ''
+                return ch.decode('utf-8', errors='replace')
+            except Exception:
+                pass
+        else:
+            try:
+                import termios, tty
+                fd = sys.stdin.fileno()
+                old = termios.tcgetattr(fd)
+                tty.setraw(fd)
+                ch = sys.stdin.read(1)
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                return ch
+            except Exception:
+                pass
+        # fallback
+        return sys.stdin.readline().rstrip('\r\n')
 
     def _show_up_to_date_box(self, current_version: str) -> None:
         print("", flush=True)
@@ -377,72 +417,83 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
         except Exception:
             return None
 
+    def _render_update_box(self, latest_tag: str, summary: str, current_version: str, selected: int, options: list[tuple[str, str]]) -> None:
+        self._save_cursor()
+        print("\033[1;33m╔══════════════════════════════════════════════════════════════╗\033[0m", flush=True)
+        print(f"\033[1;33m║\033[0m  \033[1;36m🌟 NapCat AI Tools 有新版本可用！\033[0m                              \033[1;33m║\033[0m", flush=True)
+        print(f"\033[1;33m║\033[0m  当前版本: \033[1;31m{current_version}\033[0m  →  最新版本: \033[1;32m{latest_tag}\033[0m                  \033[1;33m║\033[0m", flush=True)
+        print(f"\033[1;33m║\033[0m  {summary[:62]:<62s} \033[1;33m║\033[0m", flush=True)
+        print("\033[1;33m║\033[0m                                                              \033[1;33m║\033[0m", flush=True)
+        if self._is_interactive_terminal():
+            print("\033[1;33m║\033[0m  用 \033[1;37m↑↓\033[0m 方向键选择，\033[1;37mEnter\033[0m 确认                               \033[1;33m║\033[0m", flush=True)
+        else:
+            print("\033[1;33m║\033[0m  输入数字选择，按 \033[1;37mEnter\033[0m 确认                                   \033[1;33m║\033[0m", flush=True)
+        print("\033[1;33m╠══════════════════════════════════════════════════════════════╣\033[0m", flush=True)
+        for i, (text, _key) in enumerate(options):
+            prefix = "\033[1;47;30m" if i == selected else "  "
+            suffix = "\033[0m" if i == selected else ""
+            print(f"\033[1;33m║\033[0m  {prefix}▶ {text:<20s}{suffix}                                   \033[1;33m║\033[0m", flush=True)
+        print("\033[1;33m╚══════════════════════════════════════════════════════════════╝\033[0m", flush=True)
+        self._restore_cursor()
+
     def _show_update_prompt(self, latest_tag: str, release: dict[str, Any]) -> None:
         body = release.get("body") or ""
         summary = body.split("\n")[0] if body else ""
         if len(summary) > 80:
             summary = summary[:77] + "..."
 
-        lines = [
-            "\033[1;33m╔══════════════════════════════════════════════════════════════╗\033[0m",
-            f"\033[1;33m║\033[0m  \033[1;36m🌟 NapCat AI Tools 有新版本可用！\033[0m                              \033[1;33m║\033[0m",
-            f"\033[1;33m║\033[0m  当前版本: \033[1;31m{self._current_version()}\033[0m  →  最新版本: \033[1;32m{latest_tag}\033[0m                  \033[1;33m║\033[0m",
-            f"\033[1;33m║\033[0m  {summary[:62]:<62s} \033[1;33m║\033[0m",
-            "\033[1;33m║\033[0m                                                              \033[1;33m║\033[0m",
-            "\033[1;33m║\033[0m  用 \033[1;37m↑↓\033[0m 方向键选择，\033[1;37mEnter\033[0m 确认                               \033[1;33m║\033[0m",
-            "\033[1;33m╠══════════════════════════════════════════════════════════════╣\033[0m",
-        ]
+        current_version = self._current_version()
         options = [
-            ("更新", "u"),
+            ("\033[1;32m更新\033[0m", "u"),
             ("跳过（下次还提示）", "s"),
             ("不再提示此版本", "n"),
         ]
         selected = 0
-        # 终端交互
-        try:
-            import termios, tty
-            fd = sys.stdin.fileno()
-            old = termios.tcgetattr(fd)
-            tty.setraw(fd)
-        except Exception:
-            old = None
+        interactive = self._is_interactive_terminal()
 
         def render():
-            self._save_cursor()
-            for line in lines:
-                print(line, flush=True)
-            for i, (text, _key) in enumerate(options):
-                prefix = "\033[1;47;30m" if i == selected else "  "
-                suffix = "\033[0m" if i == selected else ""
-                print(f"\033[1;33m║\033[0m  {prefix}▶ {text:<20s}{suffix}                                   \033[1;33m║\033[0m", flush=True)
-            print("\033[1;33m╚══════════════════════════════════════════════════════════════╝\033[0m", flush=True)
-            self._restore_cursor()
+            self._render_update_box(latest_tag, summary, current_version, selected, options)
 
         try:
             render()
             while True:
-                ch = sys.stdin.read(1)
-                if ch == "\x1b":
-                    ch2 = sys.stdin.read(2)
-                    if ch2 == "[A":
-                        selected = (selected - 1) % len(options)
-                    elif ch2 == "[B":
-                        selected = (selected + 1) % len(options)
-                    render()
-                elif ch in "\r\n":
-                    option_key = options[selected][1]
-                    break
-                elif ch == "\x03":
+                ch = self._getch()
+                if ch in ('\x03', 'q', 'Q'):  # Ctrl+C or Q
                     option_key = "s"
                     break
-        finally:
-            if old is not None:
-                try:
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
-                except Exception:
-                    pass
+                if ch == '\x1b':
+                    ch2 = self._getch()
+                    if ch2 == '[':
+                        ch3 = self._getch()
+                        if ch3 == 'A':
+                            selected = (selected - 1) % len(options)
+                            render()
+                        elif ch3 == 'B':
+                            selected = (selected + 1) % len(options)
+                            render()
+                    continue
+                if ch in ('\r', '\n', ''):
+                    option_key = options[selected][1]
+                    break
+                # 数字快速选择
+                if ch in ('1', '2', '3') and interactive:
+                    idx = int(ch) - 1
+                    selected = idx
+                    render()
+                elif ch in ('1', '2', '3'):
+                    idx = int(ch) - 1
+                    option_key = options[idx][1]
+                    break
+        except Exception:
+            # 如果交互输入完全不可用，直接跳过更新
+            print(f"\033[1;33m发现新版本 v{latest_tag}，但终端无法交互。当前版本 {current_version}。\033[0m", flush=True)
+            print("\033[1;33m请在终端手动更新或关闭更新检查。\033[0m", flush=True)
+            time.sleep(2)
+            return
 
-        render()
+        # 刷掉选择框
+        if interactive:
+            self._clear_lines(len(options) + 8)
         print(f"\n你的选择: {options[selected][0]}", flush=True)
         time.sleep(0.5)
 
