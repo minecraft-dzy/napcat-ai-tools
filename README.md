@@ -59,7 +59,7 @@ pip install httpx
 | `napcat_get_group_honor_info` | 获取群荣誉信息 |
 | `napcat_check_group_join_status` | 检查是否已入群 |
 
-### 群管理（20 个）
+### 群管理（21 个）
 
 | 工具 | 说明 | 风险 |
 |---|---|---|
@@ -82,6 +82,7 @@ pip install httpx
 | `napcat_set_essence_message` | 设为精华消息 | 低 |
 | `napcat_delete_essence_message` | 取消精华 | 低 |
 | `napcat_send_poke` | 发戳一戳 | 低 |
+| `napcat_at_user` | @指定用户并发送消息 | 低 |
 | `napcat_watch_group_join_status` | 登记进群观察 | 低 |
 
 ### 好友与申请（11 个）

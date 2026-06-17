@@ -35,7 +35,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.0.0", description="配置版本")
+    config_version: str = Field(default="1.1.0", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -124,6 +124,7 @@ class GroupManageToolConfig(PluginConfigBase):
     watch_group_join_status: bool = _ui_field("登记进群观察任务")
     remove_group_join_watch: bool = _ui_field("删除进群观察任务")
     set_group_portrait: bool = _ui_field("设置群头像")
+    at_user: bool = _ui_field("主动 @指定群成员发送消息")
 
 
 class FriendToolConfig(PluginConfigBase):
@@ -265,6 +266,7 @@ _TOOL_SWITCH_ATTRS = {
     "napcat_delete_essence_message": ("group_manage_tools", "delete_essence_message"),
     "napcat_get_group_honor_info": ("group_query_tools", "get_group_honor_info"),
     "napcat_send_poke": ("group_manage_tools", "send_poke"),
+    "napcat_at_user": ("group_manage_tools", "at_user"),
     "napcat_set_friend_remark": ("friend_tools", "set_friend_remark"),
     "napcat_send_like": ("friend_tools", "send_like"),
     "napcat_ocr_image": ("message_tools", "ocr_image"),
@@ -3109,6 +3111,53 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
             return self._success(tool_name, content, data=result)
         except Exception as exc:
             return self._failure(tool_name, f"发送戳一戳失败：{exc}")
+
+    @Tool(
+        "napcat_at_user",
+        description="在群聊中 @指定用户并发送消息，对方会收到真正的 @通知提醒，麦麦会结合上下文自行判断是否需要",
+        parameters=[
+            ToolParameterInfo(name="user_id", param_type=ToolParamType.STRING, description="要 @的目标用户 QQ 号；也支持 target_name 模糊搜索", required=False),
+            ToolParameterInfo(name="target_name", param_type=ToolParamType.STRING, description="目标昵称、群名片或好友备注；不知道 QQ 号时可用", required=False),
+            ToolParameterInfo(name="message", param_type=ToolParamType.STRING, description="@之后要发送的文字内容", required=True),
+            ToolParameterInfo(name="group_id", param_type=ToolParamType.STRING, description="群号，留空则当前群", required=False),
+        ],
+    )
+    async def tool_at_user(self, user_id: str = "", target_name: str = "", message: str = "", group_id: str = "", **kwargs: Any) -> dict[str, Any]:
+        tool_name = "napcat_at_user"
+
+        self._ensure_tool_enabled(tool_name)
+        try:
+            normalized_message = str(message or "").strip()
+            if not normalized_message:
+                raise ValueError("message 不能为空")
+
+            resolved_group_id = str(group_id or kwargs.get("group_id") or "").strip()
+            matched_name = ""
+            if str(user_id or "").strip():
+                resolved_user_id = self._resolve_user_id(user_id, kwargs, allow_current=True)
+            elif str(target_name or "").strip():
+                resolved_user_id, matched_name = await self._find_user_by_name(target_name=target_name, group_id=resolved_group_id)
+            else:
+                raise ValueError("user_id 或 target_name 必须提供一个")
+
+            # 构造 OneBot v11 消息段：先 @，再接文字
+            message_segments = [
+                {"type": "at", "data": {"qq": resolved_user_id}},
+                {"type": "text", "data": {"text": " " + normalized_message}},
+            ]
+
+            params: dict[str, Any] = {
+                "message_type": "group",
+                "group_id": self._normalize_id(resolved_group_id, "group_id"),
+                "message": message_segments,
+            }
+
+            result = await self._call_action("send_msg", params)
+            matched_text = f"（匹配到 {matched_name or target_name}）" if matched_name or str(target_name or "").strip() else ""
+            content = f"已在群 {resolved_group_id} 中 @用户 {resolved_user_id}{matched_text} 并发送消息：{normalized_message!r}。{self._action_status_text(result)}"
+            return self._success(tool_name, content, data=result)
+        except Exception as exc:
+            return self._failure(tool_name, f"@用户发送消息失败：{exc}")
 
     @Tool(
         "napcat_set_friend_remark",
