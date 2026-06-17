@@ -35,7 +35,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.1.1", description="配置版本")
+    config_version: str = Field(default="1.1.2", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -3165,15 +3165,13 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
 
     @Tool(
         "napcat_at_user",
-        description="在群聊中 @指定用户并发送消息，对方会收到真正的 @通知提醒，麦麦会结合上下文自行判断是否需要",
+        description="在群聊中 @指定用户并发送消息，对方会收到真正的 @通知提醒。在 message 中使用 @[QQ号] 表达式来 @人，例如 '你好 @[123456]，@[789012] 你怎么看？'。可以 @多个不同的人",
         parameters=[
-            ToolParameterInfo(name="user_id", param_type=ToolParamType.STRING, description="要 @的目标用户 QQ 号；也支持 target_name 模糊搜索", required=False),
-            ToolParameterInfo(name="target_name", param_type=ToolParamType.STRING, description="目标昵称、群名片或好友备注；不知道 QQ 号时可用", required=False),
-            ToolParameterInfo(name="message", param_type=ToolParamType.STRING, description="@之后要发送的文字内容", required=True),
+            ToolParameterInfo(name="message", param_type=ToolParamType.STRING, description="要发送的消息内容，使用 @[QQ号] 表达式表示 @某人，例如：'你好 @[123456]！'", required=True),
             ToolParameterInfo(name="group_id", param_type=ToolParamType.STRING, description="群号，留空则当前群", required=False),
         ],
     )
-    async def tool_at_user(self, user_id: str = "", target_name: str = "", message: str = "", group_id: str = "", **kwargs: Any) -> dict[str, Any]:
+    async def tool_at_user(self, message: str = "", group_id: str = "", **kwargs: Any) -> dict[str, Any]:
         tool_name = "napcat_at_user"
 
         self._ensure_tool_enabled(tool_name)
@@ -3182,30 +3180,87 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
             if not normalized_message:
                 raise ValueError("message 不能为空")
 
-            resolved_group_id = str(group_id or kwargs.get("group_id") or "").strip()
-            matched_name = ""
-            if str(user_id or "").strip():
-                resolved_user_id = self._resolve_user_id(user_id, kwargs, allow_current=True)
-            elif str(target_name or "").strip():
-                resolved_user_id, matched_name = await self._find_user_by_name(target_name=target_name, group_id=resolved_group_id)
-            else:
-                raise ValueError("user_id 或 target_name 必须提供一个")
+            resolved_group_id = self._resolve_group_id(group_id, kwargs)
 
-            # 构造 OneBot v11 消息段：先 @，再接文字
-            message_segments = [
-                {"type": "at", "data": {"qq": resolved_user_id}},
-                {"type": "text", "data": {"text": " " + normalized_message}},
-            ]
+            # 1) 解析所有 @[QQ号] 表达式
+            at_pattern = re.compile(r"@\[(\d+)\]")
+            at_matches = list(at_pattern.finditer(normalized_message))
+            if not at_matches:
+                raise ValueError("message 中没有找到 @[QQ号] 表达式。请使用 @[QQ号] 格式来 @指定用户，例如 '你好 @[123456]！'")
 
+            # 2) 获取当前群成员列表以验证每个 QQ 号
+            try:
+                raw_members = await self._call_api(
+                    "adapter.napcat.group.get_group_member_list",
+                    group_id=resolved_group_id,
+                    no_cache=False,
+                )
+            except Exception:
+                # 如果获取成员列表失败，回退：不做校验，直接按输入发送
+                raw_members = None
+
+            member_qq_set: set[str] = set()
+            invalid_qqs: list[str] = []
+            member_display: dict[str, str] = {}
+
+            if isinstance(raw_members, list) and raw_members:
+                for m in raw_members:
+                    if isinstance(m, dict):
+                        uid = str(m.get("user_id") or m.get("uin") or "").strip()
+                        if uid:
+                            member_qq_set.add(uid)
+                            display = str(m.get("card") or m.get("card_name") or m.get("nickname") or uid).strip()
+                            member_display[uid] = display
+
+                for match in at_matches:
+                    qq = match.group(1)
+                    if qq not in member_qq_set:
+                        invalid_qqs.append(qq)
+
+                if invalid_qqs:
+                    valid_hint = ""
+                    if member_qq_set:
+                        sample = sorted(member_qq_set)[:10]
+                        sample_str = "、".join(sample)
+                        valid_hint = f"\n群 {resolved_group_id} 中存在的 QQ 号示例：{sample_str}"
+                    raise ValueError(
+                        f"以下 QQ 号不在群 {resolved_group_id} 中：{', '.join(invalid_qqs)}。"
+                        f"请检查 QQ 号是否正确，或使用群内成员的 QQ 号。{valid_hint}"
+                    )
+
+            # 3) 构造混合消息段
+            message_segments: list[dict[str, Any]] = []
+            last_end = 0
+            for match in at_matches:
+                # 前面普通文本
+                if match.start() > last_end:
+                    text_part = normalized_message[last_end:match.start()]
+                    if text_part:
+                        message_segments.append({"type": "text", "data": {"text": text_part}})
+                # @ 段
+                qq = match.group(1)
+                message_segments.append({"type": "at", "data": {"qq": qq}})
+                last_end = match.end()
+            # 最后剩余的文本
+            if last_end < len(normalized_message):
+                tail = normalized_message[last_end:]
+                if tail:
+                    message_segments.append({"type": "text", "data": {"text": tail}})
+
+            # 4) 发送
             params: dict[str, Any] = {
                 "message_type": "group",
                 "group_id": self._normalize_id(resolved_group_id, "group_id"),
                 "message": message_segments,
             }
-
             result = await self._call_action("send_msg", params)
-            matched_text = f"（匹配到 {matched_name or target_name}）" if matched_name or str(target_name or "").strip() else ""
-            content = f"已在群 {resolved_group_id} 中 @用户 {resolved_user_id}{matched_text} 并发送消息：{normalized_message!r}。{self._action_status_text(result)}"
+
+            # 5) 生成可读反馈
+            atted_names = [f"@{member_display.get(m.group(1), m.group(1))}" for m in at_matches]
+            content = (
+                f"已在群 {resolved_group_id} 中 @{', '.join(atted_names)} 并发送消息："
+                f"{normalized_message!r}。{self._action_status_text(result)}"
+            )
             return self._success(tool_name, content, data=result)
         except Exception as exc:
             return self._failure(tool_name, f"@用户发送消息失败：{exc}")
