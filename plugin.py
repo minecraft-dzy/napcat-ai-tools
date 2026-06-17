@@ -105,7 +105,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.4.1", description="配置版本")
+    config_version: str = Field(default="1.4.2", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -852,21 +852,7 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
             record["review_result"] = "approved"
             self._save_appeal()
 
-            # 通知用户
-            try:
-                segments = [
-                    {"type": "at", "data": {"qq": uid}},
-                    {"type": "text", "data": {"text": " 你的申诉已通过，禁言已解除！"}},
-                ]
-                await self._call_action("send_msg", {
-                    "message_type": "group",
-                    "group_id": self._normalize_id(gid, "group_id"),
-                    "message": segments,
-                })
-            except Exception:
-                pass
-
-            content = f"已通过群 {gid} 用户 {uid} 的申诉（ID={appeal_id}），禁言已解除。{self._action_status_text(result)}"
+            content = f"已通过群 {gid} 用户 {uid}（{record.get('user_name', uid)}）的申诉（ID={appeal_id}），禁言已解除。{self._action_status_text(result)}"
             return self._success(tool_name, content, data=result)
         except Exception as exc:
             return self._failure(tool_name, f"审核申诉失败：{exc}")
@@ -2066,21 +2052,24 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
 
             content = f"已对群 {resolved_group_id} 的成员 {resolved_user_id} {action_text}。{self._action_status_text(raw_result)}"
 
-            # 禁言时自动发送申诉链接
+            # 禁言时自动生成申诉链接
+            appeal_link = ""
             if normalized_duration > 0 and sys.platform == "linux" and self.config.appeal.enabled:
-                await self._maybe_send_appeal_link(resolved_group_id, resolved_user_id, normalized_duration)
+                appeal_link = await self._maybe_send_appeal_link(resolved_group_id, resolved_user_id, normalized_duration)
+
+            if appeal_link:
+                content += f"\n申诉链接: {appeal_link}"
 
             return self._success(tool_name, content, data=raw_result)
         except Exception as exc:
             return self._failure(tool_name, f"设置群禁言失败：{exc}")
 
-    async def _maybe_send_appeal_link(self, group_id: str, user_id: str, duration: int) -> None:
-        """禁言后向被禁言人发送申诉链接。全部静默降级，不抛异常。"""
+    async def _maybe_send_appeal_link(self, group_id: str, user_id: str, duration: int) -> str:
+        """生成申诉链接，返回链接字符串。不通过 NapCat 发消息以避免 Uid Error。"""
         try:
             appeal_id = secrets.token_hex(8)
             user_name = user_id
 
-            # 尝试获取昵称，失败用 user_id
             try:
                 info = await self._call_api(
                     "adapter.napcat.group.get_group_member_info",
@@ -2110,26 +2099,10 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
             self._save_appeal()
 
             link = f"http://{self.config.appeal.server_ip}:{self.config.appeal.external_port}/appeal/{appeal_id}"
-
-            # 发送 @消息 —— 对方可能不存在（好友已删等），静默失败
-            try:
-                segments = [
-                    {"type": "at", "data": {"qq": user_id}},
-                    {"type": "text", "data": {"text": f" 你已被禁言 {duration} 秒。如有异议可在此申诉：{link}"}},
-                ]
-                await self._call_action("send_msg", {
-                    "message_type": "group",
-                    "group_id": self._normalize_id(group_id, "group_id"),
-                    "message": segments,
-                })
-                self.ctx.logger.info(f"已向群 {group_id} 的被禁言用户 {user_id} 发送申诉链接 appeal_id={appeal_id}")
-            except Exception:
-                self.ctx.logger.info(
-                    f"申诉链接 appeal_id={appeal_id} 已生成但群内 @消息发送失败（用户可能不存在）；"
-                    f"链接仍可通过申诉页面访问"
-                )
+            self.ctx.logger.info(f"申诉链接已生成 appeal_id={appeal_id} 用户={user_name}({user_id}) 群={group_id} 时长={duration}秒 → {link}")
+            return link
         except Exception:
-            pass  # 全部静默，绝不影响主流程
+            return ""
 
     @Tool(
         "napcat_kick_group_member",
