@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import hashlib
 import os
+import re
 import shutil
 import subprocess
+import sys
 import tempfile
+import threading
 import time
+import urllib.request
 import zipfile
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -56,6 +61,15 @@ class SafetyConfig(PluginConfigBase):
     allow_raw_action: bool = _ui_field("允许 AI 调用原始 NapCat 动作")
     url_safety_check: bool = _ui_field("链接安全检查（总是返回安全）")
     command_confirm_qq: str = Field(default="", description='命令执行需要该 QQ 发送"执行"确认，为空则不限制')
+
+
+class UpdateConfig(PluginConfigBase):
+    __ui_label__ = "更新"
+    __ui_icon__ = "rocket"
+    __ui_order__ = 99
+
+    check_updates: bool = Field(default=True, description="启动时检查 GitHub 更新")
+    skipped_version: str = Field(default="", description="跳过的版本，该版本不再提示")
 
 
 class GroupQueryToolConfig(PluginConfigBase):
@@ -300,6 +314,7 @@ class NapCatAIToolsConfig(PluginConfigBase):
     system_tools: SystemToolConfig = Field(default_factory=SystemToolConfig)
     profile_ai_tools: ProfileAIToolConfig = Field(default_factory=ProfileAIToolConfig)
     file_tools: FileToolConfig = Field(default_factory=FileToolConfig)
+    update: UpdateConfig = Field(default_factory=UpdateConfig)
 
 
 class NapCatAIToolsPlugin(MaiBotPlugin):
@@ -310,6 +325,195 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
 
     async def on_load(self) -> None:
         self.ctx.logger.info("NapCat AI 工具插件已加载")
+        if self.config.update.check_updates:
+            asyncio.create_task(self._check_updates())
+
+    async def _check_updates(self) -> None:
+        try:
+            current_version = self._current_version()
+            latest = await asyncio.to_thread(self._fetch_latest_release)
+            if latest is None:
+                return
+            latest_tag = latest["tag_name"].lstrip("v")
+            if latest_tag <= current_version:
+                return
+            skipped = (self.config.update.skipped_version or "").strip()
+            if latest_tag == skipped:
+                return
+            asyncio.create_task(asyncio.to_thread(self._show_update_prompt, latest_tag, latest))
+        except Exception:
+            pass
+
+    def _current_version(self) -> str:
+        manifest_path = Path(__file__).parent / "_manifest.json"
+        if manifest_path.exists():
+            try:
+                data = json.loads(manifest_path.read_text())
+                return (data.get("version") or "0.0.0").lstrip("v")
+            except Exception:
+                pass
+        return "0.0.0"
+
+    def _fetch_latest_release(self) -> dict[str, Any] | None:
+        try:
+            req = urllib.request.Request(
+                "https://api.github.com/repos/minecraft-dzy/napcat-ai-tools/releases/latest",
+                headers={"Accept": "application/vnd.github+json", "User-Agent": "napcat-ai-tools"},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read())
+        except Exception:
+            return None
+
+    def _show_update_prompt(self, latest_tag: str, release: dict[str, Any]) -> None:
+        body = release.get("body") or ""
+        summary = body.split("\n")[0] if body else ""
+        if len(summary) > 80:
+            summary = summary[:77] + "..."
+
+        lines = [
+            "\033[1;33m╔══════════════════════════════════════════════════════════════╗\033[0m",
+            f"\033[1;33m║\033[0m  \033[1;36m🌟 NapCat AI Tools 有新版本可用！\033[0m                              \033[1;33m║\033[0m",
+            f"\033[1;33m║\033[0m  当前版本: \033[1;31m{self._current_version()}\033[0m  →  最新版本: \033[1;32m{latest_tag}\033[0m                  \033[1;33m║\033[0m",
+            f"\033[1;33m║\033[0m  {summary[:62]:<62s} \033[1;33m║\033[0m",
+            "\033[1;33m║\033[0m                                                              \033[1;33m║\033[0m",
+            "\033[1;33m║\033[0m  用 \033[1;37m↑↓\033[0m 方向键选择，\033[1;37mEnter\033[0m 确认                               \033[1;33m║\033[0m",
+            "\033[1;33m╠══════════════════════════════════════════════════════════════╣\033[0m",
+        ]
+        options = [
+            ("更新", "u"),
+            ("跳过（下次还提示）", "s"),
+            ("不再提示此版本", "n"),
+        ]
+        selected = 0
+        # 终端交互
+        try:
+            import termios, tty
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            tty.setraw(fd)
+        except Exception:
+            old = None
+
+        def render():
+            self._save_cursor()
+            for line in lines:
+                print(line, flush=True)
+            for i, (text, _key) in enumerate(options):
+                prefix = "\033[1;47;30m" if i == selected else "  "
+                suffix = "\033[0m" if i == selected else ""
+                print(f"\033[1;33m║\033[0m  {prefix}▶ {text:<20s}{suffix}                                   \033[1;33m║\033[0m", flush=True)
+            print("\033[1;33m╚══════════════════════════════════════════════════════════════╝\033[0m", flush=True)
+            self._restore_cursor()
+
+        try:
+            render()
+            while True:
+                ch = sys.stdin.read(1)
+                if ch == "\x1b":
+                    ch2 = sys.stdin.read(2)
+                    if ch2 == "[A":
+                        selected = (selected - 1) % len(options)
+                    elif ch2 == "[B":
+                        selected = (selected + 1) % len(options)
+                    render()
+                elif ch in "\r\n":
+                    option_key = options[selected][1]
+                    break
+                elif ch == "\x03":
+                    option_key = "s"
+                    break
+        finally:
+            if old is not None:
+                try:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
+                except Exception:
+                    pass
+
+        render()
+        print(f"\n你的选择: {options[selected][0]}", flush=True)
+        time.sleep(0.5)
+
+        if option_key == "u":
+            self._do_update(latest_tag, release)
+        elif option_key == "n":
+            self._save_skipped_version(latest_tag)
+
+    def _save_cursor(self) -> None:
+        sys.stdout.write("\0337")
+
+    def _restore_cursor(self) -> None:
+        sys.stdout.write("\0338")
+
+    def _save_skipped_version(self, version: str) -> None:
+        try:
+            self.config.update.skipped_version = version
+            self.ctx.logger.info(f"将跳过版本 {version} 的更新提示")
+        except Exception:
+            pass
+
+    def _do_update(self, latest_tag: str, release: dict[str, Any]) -> None:
+        zip_url = release.get("zipball_url") or ""
+        if not zip_url:
+            print("\033[1;31m无法获取下载链接\033[0m", flush=True)
+            time.sleep(2)
+            return
+
+        plugin_dir = Path(__file__).parent.resolve()
+        print(f"\n\033[1;36m正在下载 napcat-ai-tools {latest_tag} ...\033[0m", flush=True)
+        try:
+            req = urllib.request.Request(zip_url, headers={"User-Agent": "napcat-ai-tools"})
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                zip_data = resp.read()
+        except Exception as e:
+            print(f"\033[1;31m下载失败: {e}\033[0m", flush=True)
+            time.sleep(3)
+            return
+
+        print(f"\033[1;36m正在解压并替换文件...\033[0m", flush=True)
+        try:
+            with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
+                prefix = ""
+                for name in zf.namelist():
+                    if "/" in name:
+                        prefix = name.split("/")[0] + "/"
+                        break
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    tmppath = Path(tmpdir)
+                    for name in zf.namelist():
+                        rel = name[len(prefix):] if prefix and name.startswith(prefix) else name
+                        if not rel or rel.endswith("/"):
+                            continue
+                        dest = tmppath / rel
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        dest.write_bytes(zf.read(name))
+
+                    src = tmppath
+                    for item in src.iterdir():
+                        if item.name == "patches":
+                            continue
+                        dest = plugin_dir / item.name
+                        if item.is_dir():
+                            if dest.exists():
+                                shutil.rmtree(dest, ignore_errors=True)
+                            shutil.copytree(item, dest)
+                        else:
+                            shutil.copy2(item, dest)
+        except Exception as e:
+            print(f"\033[1;31m解压替换失败: {e}\033[0m", flush=True)
+            time.sleep(3)
+            return
+
+        print(f"\033[1;32m更新完成！正在重启 MaiBot...\033[0m", flush=True)
+        time.sleep(1)
+        try:
+            import termios, tty
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        except Exception:
+            pass
+        os.execv(sys.executable, [sys.executable] + sys.argv)
 
     async def on_unload(self) -> None:
         self.ctx.logger.info("NapCat AI 工具插件已卸载")
