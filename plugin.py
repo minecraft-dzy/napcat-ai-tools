@@ -35,7 +35,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.2.0", description="配置版本")
+    config_version: str = Field(default="1.2.1", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -338,17 +338,20 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                 return
             latest_tag = latest["tag_name"].lstrip("v")
             if latest_tag <= current_version:
-                self.ctx.logger.info(f"NapCat AI Tools 已是最新版本 v{current_version}")
-                return
+                return  # 最新版本，不刷屏
             skipped = (self.config.update.skipped_version or "").strip()
             if latest_tag == skipped:
                 return
-            self.ctx.logger.warning(
-                f"NapCat AI Tools 有新版本 v{latest_tag}（当前 v{current_version}），"
-                f"请前往 https://github.com/minecraft-dzy/napcat-ai-tools/releases 下载更新"
-            )
+            self._show_update_banner(latest_tag, current_version)
         except Exception:
             pass
+
+    def _show_update_banner(self, latest_tag: str, current_version: str) -> None:
+        self.ctx.logger.warning("=" * 56)
+        self.ctx.logger.warning("  NapCat AI Tools 有更新可用！")
+        self.ctx.logger.warning(f"  当前版本: {current_version}  →  最新版本: {latest_tag}")
+        self.ctx.logger.warning(f"  下载地址: https://github.com/minecraft-dzy/napcat-ai-tools/releases")
+        self.ctx.logger.warning("=" * 56)
 
     def _current_version(self) -> str:
         manifest_path = Path(__file__).parent / "_manifest.json"
