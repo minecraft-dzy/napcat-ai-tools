@@ -55,6 +55,7 @@ class SafetyConfig(PluginConfigBase):
 
     allow_raw_action: bool = _ui_field("允许 AI 调用原始 NapCat 动作")
     url_safety_check: bool = _ui_field("链接安全检查（总是返回安全）")
+    command_confirm_qq: str = Field(default="", description='命令执行需要该 QQ 发送"执行"确认，为空则不限制')
 
 
 class GroupQueryToolConfig(PluginConfigBase):
@@ -3829,8 +3830,11 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
 
     # ===== 文件与执行工具 =====
 
-    _EXEC_AUTHORIZED_USER_ID = "3939129639"
     _EXEC_CONFIRM_KEYWORD = "执行"
+
+    @property
+    def _authorized_qq(self) -> str:
+        return (getattr(self.config.safety, "command_confirm_qq", "") or "").strip()
 
     def _file_workspace(self) -> Path:
         """获取文件工作目录。"""
@@ -4039,7 +4043,7 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
 
     @Tool(
         "napcat_execute_command",
-        description='请求执行一条命令或脚本。此操作需要 QQ 3939129639 在聊天中发送"执行"二字确认后才会真正运行，其他人无法触发执行。调用后命令会进入待确认状态。',
+        description='请求执行一条命令或脚本。需授权 QQ 在聊天中发送"执行"确认后才会运行。调用后进入待确认状态。',
         parameters=[
             ToolParameterInfo(name="command", param_type=ToolParamType.STRING, description="要执行的命令，例如 'python3 script.py' 或 'ls -la'", required=True),
             ToolParameterInfo(name="work_dir", param_type=ToolParamType.STRING, description="工作目录，留空则使用文件工作目录", required=False),
@@ -4071,8 +4075,9 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
             pending["items"] = items
             self._save_pending_exec(pending)
 
+            authorized_qq = self._authorized_qq
             content = (
-                f'命令已记录，等待 QQ {self._EXEC_AUTHORIZED_USER_ID} 发送"执行"确认后才会运行。\n'
+                f'命令已记录，等待 QQ {authorized_qq or "(未指定)"} 发送"执行"确认后才会运行。\n'
                 f"待执行命令：{normalized_command}\n"
                 f"工作目录：{normalized_work_dir}\n"
                 f"当前共 {len(items)} 条待确认命令。"
@@ -4163,7 +4168,8 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
         message_info = message.get("message_info") or {}
         user_info = message_info.get("user_info") or {}
         user_id = str(user_info.get("user_id") or "").strip()
-        if user_id != self._EXEC_AUTHORIZED_USER_ID:
+        authorized_qq = self._authorized_qq
+        if authorized_qq and user_id != authorized_qq:
             return True, True, None, None, None
 
         # 检查消息内容是否精确为"执行"

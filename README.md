@@ -7,6 +7,7 @@
 ### 1. 放入插件目录
 
 ```bash
+# 整个目录就是 MaiBot 的一个插件
 cp -r napcat-ai-tools /path/to/MaiBot/plugins/
 ```
 
@@ -194,6 +195,9 @@ A: 安装 reasoning_engine 补丁，reply 后强制结束循环。
 
 **Q: 需要什么 NapCat 版本？**
 A: 所有接口都是 NapCat 标准动作，版本无关。
+
+**Q: 命令执行工具怎么授权？**
+A: 在 WebUI 插件面板的「安全」分区填写 `command_confirm_qq`，填入你的 QQ 号。之后只有你的 QQ 发送"执行"才能触发命令。留空则不限制任何用户。
 
 ## 协议
 
