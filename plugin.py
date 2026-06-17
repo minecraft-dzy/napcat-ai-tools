@@ -105,7 +105,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.4.2", description="配置版本")
+    config_version: str = Field(default="1.4.3", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -757,21 +757,20 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                 else:
                     self._send_html(404, "<h1>Not Found</h1>")
 
-        ip = self.config.appeal.server_ip
+        ip = "0.0.0.0"  # 绑定所有接口，外部通过 server_ip 访问
         port = self.config.appeal.port
+        display_ip = self.config.appeal.server_ip
         for _ in range(5):
             try:
                 self._appeal_server = HTTPServer((ip, port), _AppealHandler)
                 break
             except OSError:
-                if port == 0:
-                    port = 8090
                 port += 1
                 self.config.appeal.external_port = port
         if self._appeal_server is None:
-            self.ctx.logger.error("申诉服务器启动失败：无法绑定端口")
+            self.ctx.logger.error(f"申诉服务器启动失败：无法绑定端口 {display_ip}:{self.config.appeal.external_port}")
             return
-        self.ctx.logger.info(f"申诉服务器已启动: http://{ip}:{port}")
+        self.ctx.logger.info(f"申诉服务器已启动: http://{display_ip}:{self.config.appeal.external_port}")
         await asyncio.to_thread(self._appeal_server.serve_forever)
 
     async def _stop_appeal_server(self) -> None:
@@ -2058,7 +2057,10 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                 appeal_link = await self._maybe_send_appeal_link(resolved_group_id, resolved_user_id, normalized_duration)
 
             if appeal_link:
-                content += f"\n申诉链接: {appeal_link}"
+                content += (
+                    f"\n【重要】被禁言用户申诉链接: {appeal_link}"
+                    f"\n请务必在回复中告知用户此链接。"
+                )
 
             return self._success(tool_name, content, data=raw_result)
         except Exception as exc:
