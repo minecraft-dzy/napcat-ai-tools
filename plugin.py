@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import io
 import json
 import hashlib
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -16,8 +18,10 @@ import threading
 import time
 import urllib.request
 import zipfile
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from urllib.parse import parse_qs, urlparse
 
 from maibot_sdk import EventHandler, Field, HookHandler, MaiBotPlugin, PluginConfigBase, Tool
 from maibot_sdk.types import EventType, HookMode, HookOrder, ToolParameterInfo, ToolParamType
@@ -25,6 +29,72 @@ from maibot_sdk.types import EventType, HookMode, HookOrder, ToolParameterInfo, 
 
 def _ui_field(description: str, *, default: bool = True):
     return Field(default=default, description=description, json_schema_extra={"label": description, "hint": description})
+
+
+# ---- 申诉页面 HTML 模板 ----
+
+_APPEAL_FORM_HTML = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>禁言申诉</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,sans-serif;background:#f0f4f8;display:flex;justify-content:center;align-items:center;min-height:100vh;padding:20px}
+.card{background:#fff;border-radius:16px;padding:32px;max-width:480px;width:100%%;box-shadow:0 4px 24px rgba(0,0,0,.08)}
+h1{font-size:22px;color:#1a1a2e;margin-bottom:8px}
+.meta{color:#666;font-size:14px;margin-bottom:24px}
+.meta span{background:#ffeaa7;padding:2px 8px;border-radius:4px}
+textarea{width:100%%;height:140px;border:2px solid #dfe6e9;border-radius:10px;padding:14px;font-size:15px;resize:vertical;outline:none;transition:border .2s}
+textarea:focus{border-color:#6c5ce7}
+.btn{width:100%%;padding:14px;background:#6c5ce7;color:#fff;border:none;border-radius:10px;font-size:16px;cursor:pointer;margin-top:16px;transition:background .2s}
+.btn:hover{background:#5a4bd1}
+</style></head>
+<body>
+<div class="card">
+<h1>📩 禁言申诉</h1>
+<p class="meta">被禁言用户：<span>%s</span> &nbsp; 禁言时长：<b>%s</b> 秒</p>
+<form method="POST" action="/appeal/%s">
+<textarea name="appeal_text" placeholder="请输入申诉内容，说明认错理由或请求解除禁言..." required></textarea>
+<button class="btn" type="submit">提交申诉</button>
+</form>
+</div>
+</body></html>"""
+
+_APPEAL_SUBMITTED_HTML = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>申诉已提交</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,sans-serif;background:#f0f4f8;display:flex;justify-content:center;align-items:center;min-height:100vh;padding:20px}
+.card{background:#fff;border-radius:16px;padding:32px;max-width:480px;width:100%%;box-shadow:0 4px 24px rgba(0,0,0,.08);text-align:center}
+h1{font-size:22px;color:#00b894;margin-bottom:12px}
+p{color:#636e72;font-size:15px}
+</style></head>
+<body>
+<div class="card">
+<h1>✔ 申诉已提交</h1>
+<p>你的申诉已成功提交，管理员将尽快审核处理。</p>
+</div>
+</body></html>"""
+
+_APPEAL_CLOSED_HTML = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>申诉已关闭</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,sans-serif;background:#f0f4f8;display:flex;justify-content:center;align-items:center;min-height:100vh;padding:20px}
+.card{background:#fff;border-radius:16px;padding:32px;max-width:480px;width:100%%;box-shadow:0 4px 24px rgba(0,0,0,.08);text-align:center}
+h1{font-size:22px;color:#d63031;margin-bottom:12px}
+p{color:#636e72;font-size:15px}
+</style></head>
+<body>
+<div class="card">
+<h1>🔒 申诉已关闭</h1>
+<p>该申诉链接已失效或已被处理。</p>
+</div>
+</body></html>"""
 
 
 class PluginSectionConfig(PluginConfigBase):
@@ -35,7 +105,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.3.0", description="配置版本")
+    config_version: str = Field(default="1.4.0", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -61,6 +131,19 @@ class SafetyConfig(PluginConfigBase):
     allow_raw_action: bool = _ui_field("允许 AI 调用原始 NapCat 动作")
     url_safety_check: bool = _ui_field("链接安全检查（总是返回安全）")
     command_confirm_qq: str = Field(default="", description='命令执行需要该 QQ 发送"执行"确认，为空则不限制')
+
+
+class AppealConfig(PluginConfigBase):
+    """禁言申诉配置。"""
+
+    __ui_label__ = "申诉"
+    __ui_icon__ = "mail"
+    __ui_order__ = 3
+
+    enabled: bool = _ui_field("启用禁言申诉功能（仅Linux生效）")
+    server_ip: str = Field(default="47.100.213.47", description="申诉服务器绑定的IP地址")
+    port: int = Field(default=8090, description="申诉服务器端口，0=自动选择")
+    external_port: int = Field(default=8090, description="对外显示的端口")
 
 
 class UpdateConfig(PluginConfigBase):
@@ -301,6 +384,8 @@ _TOOL_SWITCH_ATTRS = {
     "napcat_get_group_msg_history": ("message_tools", "get_group_msg_history"),
     "napcat_forward_friend_single_msg": ("message_tools", "forward_friend_single_msg"),
     "napcat_forward_group_single_msg": ("message_tools", "forward_group_single_msg"),
+    "napcat_list_appeals": ("appeal", "enabled"),
+    "napcat_approve_appeal": ("appeal", "enabled"),
 }
 
 class NapCatAIToolsConfig(PluginConfigBase):
@@ -317,6 +402,7 @@ class NapCatAIToolsConfig(PluginConfigBase):
     profile_ai_tools: ProfileAIToolConfig = Field(default_factory=ProfileAIToolConfig)
     file_tools: FileToolConfig = Field(default_factory=FileToolConfig)
     update: UpdateConfig = Field(default_factory=UpdateConfig)
+    appeal: AppealConfig = Field(default_factory=AppealConfig)
 
 
 class NapCatAIToolsPlugin(MaiBotPlugin):
@@ -327,10 +413,18 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
 
     # ---- 更新检查 ----
 
+    _appeal_store: dict[str, dict[str, Any]] = {}
+    _appeal_server: Optional[HTTPServer] = None
+    _appeal_store_path: Optional[Path] = None
+
     async def on_load(self) -> None:
         self.ctx.logger.info("NapCat AI 工具插件已加载")
+        self._appeal_store_path = Path.cwd() / "data" / "napcat_ai_tools" / "appeal_store.json"
+        self._appeal_store = self._load_appeal()
         if self.config.update.check_updates:
             asyncio.create_task(self._check_updates())
+        if self.config.appeal.enabled and sys.platform == "linux":
+            asyncio.create_task(self._start_appeal_server())
 
     async def _check_updates(self) -> None:
         try:
@@ -583,7 +677,202 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
         except Exception:
             pass
 
+    # ---- 禁言申诉系统 ----
+
+    def _load_appeal(self) -> dict[str, dict[str, Any]]:
+        if self._appeal_store_path and self._appeal_store_path.exists():
+            try:
+                data = json.loads(self._appeal_store_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return {k: v for k, v in data.items() if isinstance(v, dict)}
+            except Exception:
+                pass
+        return {}
+
+    def _save_appeal(self) -> None:
+        if self._appeal_store_path:
+            try:
+                self._appeal_store_path.parent.mkdir(parents=True, exist_ok=True)
+                self._appeal_store_path.write_text(json.dumps(self._appeal_store, ensure_ascii=False, indent=2), encoding="utf-8")
+            except Exception as exc:
+                self.ctx.logger.warning(f"持久化申诉数据失败: {exc}")
+
+    async def _start_appeal_server(self) -> None:
+        if self._appeal_server is not None:
+            return
+        plugin_self = self  # noqa
+
+        class _AppealHandler(BaseHTTPRequestHandler):
+            def log_message(self, fmt, *args):
+                pass  # 静默日志
+
+            def _send_html(self, status=200, body=""):
+                self.send_response(status)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.end_headers()
+                self.wfile.write(body.encode("utf-8"))
+
+            def do_GET(self):
+                parsed = urlparse(self.path)
+                path = parsed.path.rstrip("/")
+                if path.startswith("/appeal/"):
+                    appeal_id = path.split("/appeal/")[-1]
+                    record = plugin_self._appeal_store.get(appeal_id)
+                    if not record or record["status"] != "open":
+                        self._send_html(410, _APPEAL_CLOSED_HTML)
+                        return
+                    self._send_html(200, _APPEAL_FORM_HTML % (appeal_id, record["user_name"], record["duration"]))
+                else:
+                    self._send_html(404, "<h1>Not Found</h1>")
+
+            def do_POST(self):
+                parsed = urlparse(self.path)
+                path = parsed.path.rstrip("/")
+                if path.startswith("/appeal/"):
+                    appeal_id = path.split("/appeal/")[-1]
+                    record = plugin_self._appeal_store.get(appeal_id)
+                    if not record or record["status"] != "open":
+                        self._send_html(410, _APPEAL_CLOSED_HTML)
+                        return
+                    content_len = int(self.headers.get("Content-Length", 0))
+                    body = self.rfile.read(content_len).decode("utf-8")
+                    params = parse_qs(body)
+                    text = (params.get("appeal_text", [""])[0] or "").strip()
+                    if not text or len(text) < 2:
+                        self._send_html(200, _APPEAL_FORM_HTML % (appeal_id, record["user_name"], record["duration"]) + "<script>alert('申诉内容不能为空');</script>")
+                        return
+                    plugin_self._appeal_store[appeal_id]["appeal_text"] = text
+                    plugin_self._appeal_store[appeal_id]["status"] = "pending_review"
+                    plugin_self._save_appeal()
+                    # 通知主程序
+                    plugin_self.ctx.logger.warning(
+                        f"\n{'='*60}\n"
+                        f"[申诉通知] 群 {record['group_id']} 的 {record['user_id']}/{record['user_name']} "
+                        f"被你禁言了 {record['duration']} 秒，该用户当前通过申诉功能提交了解除禁言申请，"
+                        f"申请内容为：{text}\n"
+                        f"申请ID: {appeal_id}\n"
+                        f"{'='*60}"
+                    )
+                    self._send_html(200, _APPEAL_SUBMITTED_HTML)
+                else:
+                    self._send_html(404, "<h1>Not Found</h1>")
+
+        ip = self.config.appeal.server_ip
+        port = self.config.appeal.port
+        for _ in range(5):
+            try:
+                self._appeal_server = HTTPServer((ip, port), _AppealHandler)
+                break
+            except OSError:
+                if port == 0:
+                    port = 8090
+                port += 1
+                self.config.appeal.external_port = port
+        if self._appeal_server is None:
+            self.ctx.logger.error("申诉服务器启动失败：无法绑定端口")
+            return
+        self.ctx.logger.info(f"申诉服务器已启动: http://{ip}:{port}")
+        await asyncio.to_thread(self._appeal_server.serve_forever)
+
+    async def _stop_appeal_server(self) -> None:
+        if self._appeal_server is not None:
+            try:
+                self._appeal_server.shutdown()
+                self._appeal_server = None
+                self.ctx.logger.info("申诉服务器已停止")
+            except Exception:
+                pass
+
+    @Tool(
+        "napcat_list_appeals",
+        description="查看当前待处理的禁言申诉列表",
+        parameters=[
+            ToolParameterInfo(name="status", param_type=ToolParamType.STRING, description="筛选状态: open(未提交申诉)/pending_review(待审核)/closed(已关闭)，留空=全部", required=False),
+        ],
+    )
+    async def tool_list_appeals(self, status: str = "", **kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        tool_name = "napcat_list_appeals"
+        self._ensure_tool_enabled(tool_name)
+        try:
+            items = list(self._appeal_store.values())
+            if status:
+                items = [i for i in items if i.get("status") == status]
+            items.sort(key=lambda x: x.get("muted_at", ""), reverse=True)
+            preview = items[:30]
+            lines = []
+            for item in preview:
+                aid = item.get("appeal_id", "")[:12]
+                gid = item.get("group_id", "")
+                uid = item.get("user_id", "")
+                name = item.get("user_name", "")
+                dur = item.get("duration", 0)
+                st = item.get("status", "")
+                appeal_text = (item.get("appeal_text") or "")[:40]
+                lines.append(
+                    f"- [{st}] 群{gid} {name}({uid}) 禁言{dur}秒 "
+                    f"ID={aid}"
+                )
+                if appeal_text:
+                    lines.append(f"  申诉内容: {appeal_text}")
+            content = f"当前申诉共 {len(self._appeal_store)} 条，展示 {len(preview)} 条：\n" + ("\n".join(lines) or "无")
+            return self._success(tool_name, content, data={"total": len(self._appeal_store), "items": preview})
+        except Exception as exc:
+            return self._failure(tool_name, f"获取申诉列表失败：{exc}")
+
+    @Tool(
+        "napcat_approve_appeal",
+        description="审核通过申诉，自动解除禁言并通知用户",
+        parameters=[
+            ToolParameterInfo(name="appeal_id", param_type=ToolParamType.STRING, description="申请ID", required=True),
+        ],
+    )
+    async def tool_approve_appeal(self, appeal_id: str = "", **kwargs: Any) -> dict[str, Any]:
+        del kwargs
+        tool_name = "napcat_approve_appeal"
+        self._ensure_tool_enabled(tool_name)
+        try:
+            record = self._appeal_store.get(appeal_id)
+            if not record:
+                raise ValueError(f"未找到申请ID: {appeal_id}")
+            if record["status"] != "pending_review" and record["status"] != "open":
+                raise ValueError(f"该申请状态为 {record['status']}，无法审核")
+
+            gid = record["group_id"]
+            uid = record["user_id"]
+            # 解除禁言
+            result = await self._call_api(
+                "adapter.napcat.group.set_group_ban",
+                group_id=gid,
+                user_id=uid,
+                duration=0,
+            )
+            # 关闭申请
+            record["status"] = "closed"
+            record["review_result"] = "approved"
+            self._save_appeal()
+
+            # 通知用户
+            try:
+                segments = [
+                    {"type": "at", "data": {"qq": uid}},
+                    {"type": "text", "data": {"text": " 你的申诉已通过，禁言已解除！"}},
+                ]
+                await self._call_action("send_msg", {
+                    "message_type": "group",
+                    "group_id": self._normalize_id(gid, "group_id"),
+                    "message": segments,
+                })
+            except Exception:
+                pass
+
+            content = f"已通过群 {gid} 用户 {uid} 的申诉（ID={appeal_id}），禁言已解除。{self._action_status_text(result)}"
+            return self._success(tool_name, content, data=result)
+        except Exception as exc:
+            return self._failure(tool_name, f"审核申诉失败：{exc}")
+
     async def on_unload(self) -> None:
+        await self._stop_appeal_server()
         self.ctx.logger.info("NapCat AI 工具插件已卸载")
 
     async def on_config_update(self, scope: str, config_data: dict[str, Any], version: str) -> None:
@@ -1762,9 +2051,65 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
             )
             action_text = "解除了禁言" if normalized_duration == 0 else f"已禁言 {normalized_duration} 秒"
             content = f"已对群 {resolved_group_id} 的成员 {resolved_user_id} {action_text}。{self._action_status_text(result)}"
+
+            # 禁言时自动发送申诉链接
+            if normalized_duration > 0 and sys.platform == "linux" and self.config.appeal.enabled:
+                await self._maybe_send_appeal_link(resolved_group_id, resolved_user_id, normalized_duration)
+
             return self._success(tool_name, content, data=result)
         except Exception as exc:
             return self._failure(tool_name, f"设置群禁言失败：{exc}")
+
+    async def _maybe_send_appeal_link(self, group_id: str, user_id: str, duration: int) -> None:
+        """禁言后向被禁言人发送申诉链接。"""
+        try:
+            # 生成申请ID
+            appeal_id = secrets.token_hex(8)
+            # 查昵称
+            user_name = user_id
+            try:
+                info = await self._call_api(
+                    "adapter.napcat.group.get_group_member_info",
+                    group_id=group_id,
+                    user_id=user_id,
+                    no_cache=False,
+                )
+                if isinstance(info, dict):
+                    data = info.get("data", info)
+                    if isinstance(data, dict):
+                        user_name = data.get("card") or data.get("nickname") or user_id
+            except Exception:
+                pass
+
+            now = datetime.datetime.now().isoformat()
+            self._appeal_store[appeal_id] = {
+                "appeal_id": appeal_id,
+                "group_id": group_id,
+                "user_id": user_id,
+                "user_name": user_name,
+                "duration": duration,
+                "muted_at": now,
+                "status": "open",
+                "appeal_text": "",
+                "review_result": "",
+            }
+            self._save_appeal()
+
+            link = f"http://{self.config.appeal.server_ip}:{self.config.appeal.external_port}/appeal/{appeal_id}"
+
+            # 通过 send_msg 发送 @被禁言人 + 链接
+            segments = [
+                {"type": "at", "data": {"qq": user_id}},
+                {"type": "text", "data": {"text": f" 你已被禁言 {duration} 秒。如有异议可在此申诉：{link}"}},
+            ]
+            await self._call_action("send_msg", {
+                "message_type": "group",
+                "group_id": self._normalize_id(group_id, "group_id"),
+                "message": segments,
+            })
+            self.ctx.logger.info(f"已向群 {group_id} 的被禁言用户 {user_id} 发送申诉链接 appeal_id={appeal_id}")
+        except Exception as exc:
+            self.ctx.logger.warning(f"发送申诉链接失败: {exc}")
 
     @Tool(
         "napcat_kick_group_member",
