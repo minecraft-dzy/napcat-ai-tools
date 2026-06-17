@@ -105,7 +105,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.4.0", description="配置版本")
+    config_version: str = Field(default="1.4.1", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -2043,30 +2043,44 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
             resolved_group_id = self._resolve_group_id(group_id, kwargs)
             resolved_user_id = self._resolve_user_id(user_id, kwargs)
             normalized_duration = max(0, int(duration_seconds))
-            result = await self._call_api(
+            raw_result = await self._call_api(
                 "adapter.napcat.group.set_group_ban",
                 group_id=resolved_group_id,
                 user_id=resolved_user_id,
                 duration=normalized_duration,
             )
             action_text = "解除了禁言" if normalized_duration == 0 else f"已禁言 {normalized_duration} 秒"
-            content = f"已对群 {resolved_group_id} 的成员 {resolved_user_id} {action_text}。{self._action_status_text(result)}"
+
+            # 校验响应：NapCat 的 set_group_ban 可能返回 status=unknown 但实际失败
+            data = self._extract_data(raw_result)
+            if isinstance(data, dict):
+                st = str(data.get("status") or "").strip().lower()
+                msg = str(data.get("message") or data.get("wording") or "").strip()
+                rc = data.get("retcode")
+                if st == "failed" or (msg and "error" in msg.lower()) or (rc is not None and int(rc) != 0):
+                    return self._failure(
+                        tool_name,
+                        f"禁言操作失败: {msg or f'status={st} retcode={rc}'}",
+                        data=raw_result,
+                    )
+
+            content = f"已对群 {resolved_group_id} 的成员 {resolved_user_id} {action_text}。{self._action_status_text(raw_result)}"
 
             # 禁言时自动发送申诉链接
             if normalized_duration > 0 and sys.platform == "linux" and self.config.appeal.enabled:
                 await self._maybe_send_appeal_link(resolved_group_id, resolved_user_id, normalized_duration)
 
-            return self._success(tool_name, content, data=result)
+            return self._success(tool_name, content, data=raw_result)
         except Exception as exc:
             return self._failure(tool_name, f"设置群禁言失败：{exc}")
 
     async def _maybe_send_appeal_link(self, group_id: str, user_id: str, duration: int) -> None:
-        """禁言后向被禁言人发送申诉链接。"""
+        """禁言后向被禁言人发送申诉链接。全部静默降级，不抛异常。"""
         try:
-            # 生成申请ID
             appeal_id = secrets.token_hex(8)
-            # 查昵称
             user_name = user_id
+
+            # 尝试获取昵称，失败用 user_id
             try:
                 info = await self._call_api(
                     "adapter.napcat.group.get_group_member_info",
@@ -2075,9 +2089,9 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                     no_cache=False,
                 )
                 if isinstance(info, dict):
-                    data = info.get("data", info)
-                    if isinstance(data, dict):
-                        user_name = data.get("card") or data.get("nickname") or user_id
+                    inner = info.get("data", info)
+                    if isinstance(inner, dict):
+                        user_name = inner.get("card") or inner.get("nickname") or user_id
             except Exception:
                 pass
 
@@ -2097,19 +2111,25 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
 
             link = f"http://{self.config.appeal.server_ip}:{self.config.appeal.external_port}/appeal/{appeal_id}"
 
-            # 通过 send_msg 发送 @被禁言人 + 链接
-            segments = [
-                {"type": "at", "data": {"qq": user_id}},
-                {"type": "text", "data": {"text": f" 你已被禁言 {duration} 秒。如有异议可在此申诉：{link}"}},
-            ]
-            await self._call_action("send_msg", {
-                "message_type": "group",
-                "group_id": self._normalize_id(group_id, "group_id"),
-                "message": segments,
-            })
-            self.ctx.logger.info(f"已向群 {group_id} 的被禁言用户 {user_id} 发送申诉链接 appeal_id={appeal_id}")
-        except Exception as exc:
-            self.ctx.logger.warning(f"发送申诉链接失败: {exc}")
+            # 发送 @消息 —— 对方可能不存在（好友已删等），静默失败
+            try:
+                segments = [
+                    {"type": "at", "data": {"qq": user_id}},
+                    {"type": "text", "data": {"text": f" 你已被禁言 {duration} 秒。如有异议可在此申诉：{link}"}},
+                ]
+                await self._call_action("send_msg", {
+                    "message_type": "group",
+                    "group_id": self._normalize_id(group_id, "group_id"),
+                    "message": segments,
+                })
+                self.ctx.logger.info(f"已向群 {group_id} 的被禁言用户 {user_id} 发送申诉链接 appeal_id={appeal_id}")
+            except Exception:
+                self.ctx.logger.info(
+                    f"申诉链接 appeal_id={appeal_id} 已生成但群内 @消息发送失败（用户可能不存在）；"
+                    f"链接仍可通过申诉页面访问"
+                )
+        except Exception:
+            pass  # 全部静默，绝不影响主流程
 
     @Tool(
         "napcat_kick_group_member",
