@@ -35,7 +35,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.2.1", description="配置版本")
+    config_version: str = Field(default="1.2.2", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -332,26 +332,45 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
 
     async def _check_updates(self) -> None:
         try:
+            await asyncio.sleep(2)  # 等主程序启动完再输出，避免和日志挤在一起
             current_version = self._current_version()
             latest = await asyncio.to_thread(self._fetch_latest_release)
             if latest is None:
+                self._print_up_to_date_banner(current_version)
                 return
             latest_tag = latest["tag_name"].lstrip("v")
             if latest_tag <= current_version:
-                return  # 最新版本，不刷屏
+                self._print_up_to_date_banner(current_version)
+                return
             skipped = (self.config.update.skipped_version or "").strip()
             if latest_tag == skipped:
+                self._print_up_to_date_banner(current_version)
                 return
-            self._show_update_banner(latest_tag, current_version)
+            self._print_update_banner(latest_tag, current_version)
         except Exception:
-            pass
+            self._print_up_to_date_banner(self._current_version())
 
-    def _show_update_banner(self, latest_tag: str, current_version: str) -> None:
-        self.ctx.logger.warning("=" * 56)
-        self.ctx.logger.warning("  NapCat AI Tools 有更新可用！")
+    @staticmethod
+    def _rainbow(text: str) -> str:
+        """给文本加上彩虹色（每个字符一个颜色）。"""
+        colors = [196, 202, 208, 214, 220, 226, 190, 154, 118, 82, 46, 47, 48, 49, 50, 51, 45, 39, 33, 27, 21, 20, 19, 18, 17]
+        result = []
+        for i, ch in enumerate(text):
+            code = colors[i % len(colors)]
+            result.append(f"\x1b[38;5;{code}m{ch}")
+        result.append("\x1b[0m")
+        return "".join(result)
+
+    def _print_up_to_date_banner(self, version: str) -> None:
+        self.ctx.logger.info(self._rainbow("✦ NapCat AI Tools ✦"))
+        self.ctx.logger.info(f"  当前版本: {version}  ✔ 已是最新")
+        self.ctx.logger.info("  " + "─" * 36)
+
+    def _print_update_banner(self, latest_tag: str, current_version: str) -> None:
+        self.ctx.logger.warning(self._rainbow("✦ NapCat AI Tools ✦"))
         self.ctx.logger.warning(f"  当前版本: {current_version}  →  最新版本: {latest_tag}")
-        self.ctx.logger.warning(f"  下载地址: https://github.com/minecraft-dzy/napcat-ai-tools/releases")
-        self.ctx.logger.warning("=" * 56)
+        self.ctx.logger.warning(f"  🌟 有更新！ https://github.com/minecraft-dzy/napcat-ai-tools/releases")
+        self.ctx.logger.warning("  " + "─" * 36)
 
     def _current_version(self) -> str:
         manifest_path = Path(__file__).parent / "_manifest.json"
