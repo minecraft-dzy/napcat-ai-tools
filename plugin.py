@@ -336,6 +336,7 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                 return
             latest_tag = latest["tag_name"].lstrip("v")
             if latest_tag <= current_version:
+                asyncio.create_task(asyncio.to_thread(self._show_up_to_date_box, current_version))
                 return
             skipped = (self.config.update.skipped_version or "").strip()
             if latest_tag == skipped:
@@ -343,6 +344,15 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
             asyncio.create_task(asyncio.to_thread(self._show_update_prompt, latest_tag, latest))
         except Exception:
             pass
+
+    def _show_up_to_date_box(self, current_version: str) -> None:
+        print("", flush=True)
+        print("\033[1;32m╔══════════════════════════════════════════════════════════════╗\033[0m", flush=True)
+        print(f"\033[1;32m║\033[0m  \033[1;37m✔ NapCat AI Tools 已是最新版本\033[0m                               \033[1;32m║\033[0m", flush=True)
+        print(f"\033[1;32m║\033[0m  当前版本: \033[1;36m{current_version}\033[0m                                           \033[1;32m║\033[0m", flush=True)
+        print("\033[1;32m╚══════════════════════════════════════════════════════════════╝\033[0m", flush=True)
+        time.sleep(2)
+        self._clear_lines(5)
 
     def _current_version(self) -> str:
         manifest_path = Path(__file__).parent / "_manifest.json"
@@ -444,6 +454,11 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
 
     def _restore_cursor(self) -> None:
         sys.stdout.write("\0338")
+
+    def _clear_lines(self, count: int) -> None:
+        for _ in range(count):
+            sys.stdout.write("\033[F\033[2K")
+        sys.stdout.flush()
 
     def _save_skipped_version(self, version: str) -> None:
         try:
