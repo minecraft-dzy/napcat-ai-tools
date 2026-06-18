@@ -105,7 +105,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.4.4", description="配置版本")
+    config_version: str = Field(default="1.4.5", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -423,39 +423,83 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
         self._appeal_store = self._load_appeal()
         if self.config.appeal.enabled and sys.platform == "linux":
             asyncio.create_task(self._start_appeal_server())
-        # 更新检查：全部在独立线程中跑，不依赖 Runner 的 asyncio event loop
         if self.config.update.check_updates:
-            threading.Thread(target=self._check_updates_sync, daemon=True).start()
+            threading.Thread(target=self._update_monitor_thread, daemon=True).start()
 
-    def _check_updates_sync(self) -> None:
+    # ---- 更新监视线程（注入到主进程空间，bypass Runner event loop） ----
+
+    def _update_monitor_thread(self) -> None:
+        """在独立线程中运行更新检查。用 Rich Console 输出到主进程的终端。"""
         try:
-            time.sleep(2)
-            current_version = self._current_version()
+            time.sleep(3)
+            current = self._current_version()
             latest = self._fetch_latest_release()
             if latest is None:
-                self._print_version_line(current_version)
+                self._println(self._rainbow(f"  NapCat AI Tools v{current} 已是最新"))
                 return
             latest_tag = latest["tag_name"].lstrip("v")
-            if latest_tag <= current_version:
-                self._print_version_line(current_version)
+            if latest_tag <= current:
+                self._println(self._rainbow(f"  NapCat AI Tools v{current} 已是最新"))
                 return
             skipped = (self.config.update.skipped_version or "").strip()
             if latest_tag == skipped:
-                self._print_version_line(current_version)
                 return
-            result = self._run_bar_loop(
-                ["下载更新并重启", "暂不更新", "不再提示"],
-                ["update", "skip", "ignore"],
-                0,
-                latest_tag,
-                current_version,
-            )
-            if result == "update":
+
+            # 有更新 → 三行醒目输出
+            self._println(self._rainbow("  ═══ NapCat AI Tools 有更新可用 ═══"))
+            self._println(f"    当前版本: {current}  →  最新版本: {latest_tag}")
+            self._println(f"    下载地址: https://github.com/minecraft-dzy/napcat-ai-tools/releases")
+            self._println("    按 Enter 自动下载更新并重启，或输入 s 跳过，n 不再提示")
+            self._println("  " + "─" * 50)
+
+            choice = self._wait_keypress()
+            if choice == "\r" or choice == "\n":
+                self._println("  正在通过代理下载...")
                 self._do_update_from_release(latest)
-            elif result == "ignore":
+            elif choice.lower() == "n":
                 self._save_skipped_version(latest_tag)
+            self._println("  " + "─" * 50)
         except Exception:
-            self._print_version_line(self._current_version())
+            pass
+
+    @staticmethod
+    def _println(msg: str) -> None:
+        sys.stdout.write(msg + "\n")
+        sys.stdout.flush()
+
+    @staticmethod
+    def _wait_keypress() -> str:
+        """非阻塞读取单键，5分钟超时。"""
+        import select as _sel
+        start = time.time()
+        timeout = 300
+        fd = sys.stdin.fileno()
+        try:
+            if sys.platform == "win32":
+                import msvcrt
+                while time.time() - start < timeout:
+                    if msvcrt.kbhit():
+                        return msvcrt.getch().decode("utf-8", errors="replace")
+                    time.sleep(0.1)
+            else:
+                import tty, termios, fcntl
+                old = termios.tcgetattr(fd)
+                fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+                try:
+                    tty.setcbreak(fd)
+                    fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+                    while time.time() - start < timeout:
+                        r, _, _ = _sel.select([sys.stdin], [], [], 1.0)
+                        if r:
+                            data = os.read(fd, 1)
+                            if data:
+                                return data.decode("utf-8", errors="replace")
+                finally:
+                    fcntl.fcntl(fd, fcntl.F_SETFL, fl)
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        except Exception:
+            pass
+        return ""
 
     @staticmethod
     def _rainbow(text: str) -> str:
@@ -465,9 +509,6 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
             result.append(f"\x1b[38;5;{colors[i % len(colors)]}m{ch}")
         result.append("\x1b[0m")
         return "".join(result)
-
-    def _print_version_line(self, version: str) -> None:
-        self.ctx.logger.info(self._rainbow(f"✦ NapCat AI Tools v{version} 已是最新 ✦"))
 
     def _current_version(self) -> str:
         manifest_path = Path(__file__).parent / "_manifest.json"
@@ -490,135 +531,26 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
         except Exception:
             return None
 
-    # ---- 底部选择条 ----
-
-    _BAR_BG = "\x1b[48;5;236m"
-    _BAR_HI = "\x1b[48;5;240m\x1b[1m"
-    _BAR_OFF = "\x1b[48;5;236m"
-    _RESET = "\x1b[0m"
-
-    def _run_bar_loop(self, opts: list[str], keys: list[str], selected: int, latest: str, current: str) -> str:
-        import select as _select_mod
-        done = threading.Event()
-        result = ["skip"]
-        lock = threading.Lock()
-
-        def _draw(sel: int):
-            with lock:
-                label = f"  v{current} → v{latest}  "
-                parts = [f"{self._BAR_BG}{label}{self._RESET} "]
-                for i, o in enumerate(opts):
-                    bg = self._BAR_HI if i == sel else self._BAR_OFF
-                    parts.append(f"{bg}[ {o} ]{self._RESET} ")
-                bar = "".join(parts).rstrip()
-                self._draw_bar_line(bar)
-
-        _draw(selected)
-
-        def _kb_thread():
-            nonlocal selected
-            try:
-                if sys.platform == "win32":
-                    import msvcrt
-                    while not done.is_set():
-                        if msvcrt.kbhit():
-                            ch = msvcrt.getch()
-                            if ch in (b'\x00', b'\xe0'):
-                                ch2 = msvcrt.getch()
-                                if ch2 == b'K':  # Left
-                                    selected = (selected - 1) % len(opts)
-                                    _draw(selected)
-                                elif ch2 == b'M':  # Right
-                                    selected = (selected + 1) % len(opts)
-                                    _draw(selected)
-                            elif ch in (b'\r', b'\n'):
-                                result[0] = keys[selected]
-                                done.set()
-                            elif ch in (b'\x1b', b'q', b'Q'):
-                                result[0] = "skip"
-                                done.set()
-                        else:
-                            time.sleep(0.05)
-                else:
-                    import tty, termios, fcntl
-                    fd = sys.stdin.fileno()
-                    old = termios.tcgetattr(fd)
-                    old_fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-                    try:
-                        tty.setcbreak(fd)
-                        fcntl.fcntl(fd, fcntl.F_SETFL, old_fl | os.O_NONBLOCK)
-                        while not done.is_set():
-                            r, _, _ = _select_mod.select([sys.stdin], [], [], 0.1)
-                            if r:
-                                data = os.read(fd, 16)
-                                if not data:
-                                    continue
-                                for ch in data:
-                                    if ch in (0x1b, ord('q'), ord('Q')):
-                                        result[0] = "skip"
-                                        done.set()
-                                        break
-                                    elif ch == ord('\n') or ch == ord('\r'):
-                                        result[0] = keys[selected]
-                                        done.set()
-                                        break
-                                if not done.is_set():
-                                    s = data.decode('utf-8', errors='replace')
-                                    if '\x1b[C' in s:
-                                        selected = (selected + 1) % len(opts)
-                                        _draw(selected)
-                                    elif '\x1b[D' in s:
-                                        selected = (selected - 1) % len(opts)
-                                        _draw(selected)
-                    finally:
-                        fcntl.fcntl(fd, fcntl.F_SETFL, old_fl)
-                        termios.tcsetattr(fd, termios.TCSADRAIN, old)
-            except Exception:
-                done.set()
-
-        t = threading.Thread(target=_kb_thread, daemon=True)
-        t.start()
-        done.wait(timeout=300)  # 5min max
-        done.set()
-        t.join(timeout=0.5)
-
-        # 清除选择条
-        self._clear_bar_line()
-        return result[0]
-
-    @staticmethod
-    def _draw_bar_line(bar: str) -> None:
-        sys.stdout.write(f"\x1b[s\x1b[999B\x1b[G{bar}\x1b[K\x1b[u")
-        sys.stdout.flush()
-
-    @staticmethod
-    def _clear_bar_line() -> None:
-        sys.stdout.write(f"\x1b[s\x1b[999B\x1b[G\x1b[K\x1b[u")
-        sys.stdout.flush()
-
     # ---- 下载更新 ----
 
     _GITHUB_PROXY = "https://mirror.ghproxy.com/"
 
     def _do_update_from_release(self, release: dict[str, Any]) -> None:
         tag = release.get("tag_name", "unknown")
-        # 通过代理下载源码 zip
         zip_url = f"{self._GITHUB_PROXY}https://github.com/minecraft-dzy/napcat-ai-tools/archive/refs/tags/{tag}.zip"
         plugin_dir = Path(__file__).parent.resolve()
 
-        # 在底部显示下载进度
-        self._draw_bar_line(f"{self._BAR_BG}  正在下载 {tag} ...{self._RESET}")
+        self._println(f"  [更新] 正在下载 {tag} ...")
 
         try:
             req = urllib.request.Request(zip_url, headers={"User-Agent": "napcat-ai-tools"})
             with urllib.request.urlopen(req, timeout=120) as resp:
                 zip_data = resp.read()
         except Exception as e:
-            self.ctx.logger.error(f"下载失败: {e}")
-            self._clear_bar_line()
+            self._println(f"  [更新] 下载失败: {e}")
             return
 
-        self._draw_bar_line(f"{self._BAR_BG}  正在解压并替换文件 ...{self._RESET}")
+        self._println("  [更新] 正在解压并替换文件 ...")
 
         try:
             with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
@@ -650,14 +582,11 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                         else:
                             shutil.copy2(item, dest)
         except Exception as e:
-            self.ctx.logger.error(f"解压替换失败: {e}")
-            self._clear_bar_line()
+            self._println(f"  [更新] 解压替换失败: {e}")
             return
 
-        # 更新完成，显示提示
-        self._draw_bar_line(self._rainbow("  更新完成，即将重启 ...  ") + self._RESET)
+        self._println(self._rainbow("  [更新] 更新完成，即将重启 ..."))
         time.sleep(2)
-        self._clear_bar_line()
 
         # 重启 MaiBot
         self._restart_mai()
