@@ -102,7 +102,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.4.8", description="配置版本")
+    config_version: str = Field(default="1.4.9", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -551,7 +551,7 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                     plugin_self._plea_store[plea_id]["plea_text"] = text
                     plugin_self._plea_store[plea_id]["status"] = "pending_review"
                     plugin_self._save_plea()
-                    # 通知主程序
+                    # 通知主程序（终端日志 + 转为群消息触发 Maisaka 处理）
                     plugin_self.ctx.logger.warning(
                         f"\n{'='*60}\n"
                         f"[求情通知] 群 {record['group_id']} 的 {record['user_id']}/{record['user_name']} "
@@ -560,6 +560,11 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                         f"求情ID: {plea_id}\n"
                         f"{'='*60}"
                     )
+                    threading.Thread(
+                        target=_send_plea_group_notification,
+                        args=(plugin_self, record, text, plea_id),
+                        daemon=True,
+                    ).start()
                     self._send_html(200, _PLEA_SUBMITTED_HTML)
                 else:
                     self._send_html(404, "<h1>Not Found</h1>")
@@ -4746,6 +4751,46 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                     self.ctx.logger.warning(f"发送执行结果失败 session_id={session_id}: {send_exc}")
 
         return True, True, None, None, None
+
+
+# ---- 求情群消息通知（模块级函数，供 HTTP 线程调用） ----
+
+def _send_plea_group_notification(
+    plugin: "NapCatAIToolsPlugin",
+    record: dict[str, Any],
+    text: str,
+    plea_id: str,
+) -> None:
+    """将求情通知转为 QQ 群消息，触发 Maisaka 处理。"""
+    try:
+        asyncio.run(_async_send_plea_notification(plugin, record, text, plea_id))
+    except Exception:
+        pass
+
+
+async def _async_send_plea_notification(
+    plugin: "NapCatAIToolsPlugin",
+    record: dict[str, Any],
+    text: str,
+    plea_id: str,
+) -> None:
+    try:
+        gid = str(record.get("group_id", "")).strip()
+        uid = str(record.get("user_id", "")).strip()
+        name = str(record.get("user_name", uid)).strip()
+        dur = record.get("duration", 0)
+        msg = (
+            f"[求情通知] {name}({uid}) 提交了解除禁言求情（被禁言 {dur} 秒）。"
+            f"求情内容：「{text}」"
+            f"推荐审核：napcat_approve_plea(\"{plea_id}\")"
+        )
+        await plugin._call_action("send_msg", {
+            "message_type": "group",
+            "group_id": plugin._normalize_id(gid, "group_id"),
+            "message": [{"type": "text", "data": {"text": msg}}],
+        })
+    except Exception:
+        pass
 
 
 def create_plugin() -> NapCatAIToolsPlugin:
