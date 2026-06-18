@@ -4,16 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import io
 import json
 import hashlib
 import os
 import re
 import secrets
-import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import urllib.request
@@ -105,7 +102,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.4.5", description="配置版本")
+    config_version: str = Field(default="1.4.6", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -422,93 +419,42 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
         self._appeal_store_path = Path.cwd() / "data" / "napcat_ai_tools" / "appeal_store.json"
         self._appeal_store = self._load_appeal()
         if self.config.appeal.enabled and sys.platform == "linux":
-            asyncio.create_task(self._start_appeal_server())
+            threading.Thread(target=self._start_appeal_server_sync, daemon=True).start()
         if self.config.update.check_updates:
             threading.Thread(target=self._update_monitor_thread, daemon=True).start()
+
+    # ---- 申诉服务器（同步线程） ----
+
+    def _start_appeal_server_sync(self) -> None:
+        self._appeal_store_path = Path.cwd() / "data" / "napcat_ai_tools" / "appeal_store.json"
+        self._appeal_store = self._load_appeal()
+        asyncio.run(self._start_appeal_server())
 
     # ---- 更新监视线程（注入到主进程空间，bypass Runner event loop） ----
 
     def _update_monitor_thread(self) -> None:
-        """在独立线程中运行更新检查。用 Rich Console 输出到主进程的终端。"""
+        """在独立线程中运行更新检查。通过 MaiBot logger 输出，确保终端可见。"""
         try:
             time.sleep(3)
             current = self._current_version()
             latest = self._fetch_latest_release()
             if latest is None:
-                self._println(self._rainbow(f"  NapCat AI Tools v{current} 已是最新"))
+                self.ctx.logger.info(f"NapCat AI Tools v{current} 已是最新（GitHub 未响应）")
                 return
             latest_tag = latest["tag_name"].lstrip("v")
             if latest_tag <= current:
-                self._println(self._rainbow(f"  NapCat AI Tools v{current} 已是最新"))
-                return
+                return  # 最新版，不刷屏
             skipped = (self.config.update.skipped_version or "").strip()
             if latest_tag == skipped:
                 return
 
-            # 有更新 → 三行醒目输出
-            self._println(self._rainbow("  ═══ NapCat AI Tools 有更新可用 ═══"))
-            self._println(f"    当前版本: {current}  →  最新版本: {latest_tag}")
-            self._println(f"    下载地址: https://github.com/minecraft-dzy/napcat-ai-tools/releases")
-            self._println("    按 Enter 自动下载更新并重启，或输入 s 跳过，n 不再提示")
-            self._println("  " + "─" * 50)
-
-            choice = self._wait_keypress()
-            if choice == "\r" or choice == "\n":
-                self._println("  正在通过代理下载...")
-                self._do_update_from_release(latest)
-            elif choice.lower() == "n":
-                self._save_skipped_version(latest_tag)
-            self._println("  " + "─" * 50)
+            update_url = "https://github.com/minecraft-dzy/napcat-ai-tools/releases"
+            self.ctx.logger.warning("=" * 56)
+            self.ctx.logger.warning(f"  NapCat AI Tools 有更新可用！v{current} → v{latest_tag}")
+            self.ctx.logger.warning(f"  下载: {update_url}")
+            self.ctx.logger.warning("=" * 56)
         except Exception:
             pass
-
-    @staticmethod
-    def _println(msg: str) -> None:
-        sys.stdout.write(msg + "\n")
-        sys.stdout.flush()
-
-    @staticmethod
-    def _wait_keypress() -> str:
-        """非阻塞读取单键，5分钟超时。"""
-        import select as _sel
-        start = time.time()
-        timeout = 300
-        fd = sys.stdin.fileno()
-        try:
-            if sys.platform == "win32":
-                import msvcrt
-                while time.time() - start < timeout:
-                    if msvcrt.kbhit():
-                        return msvcrt.getch().decode("utf-8", errors="replace")
-                    time.sleep(0.1)
-            else:
-                import tty, termios, fcntl
-                old = termios.tcgetattr(fd)
-                fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-                try:
-                    tty.setcbreak(fd)
-                    fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-                    while time.time() - start < timeout:
-                        r, _, _ = _sel.select([sys.stdin], [], [], 1.0)
-                        if r:
-                            data = os.read(fd, 1)
-                            if data:
-                                return data.decode("utf-8", errors="replace")
-                finally:
-                    fcntl.fcntl(fd, fcntl.F_SETFL, fl)
-                    termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        except Exception:
-            pass
-        return ""
-
-    @staticmethod
-    def _rainbow(text: str) -> str:
-        colors = [196, 202, 208, 214, 220, 226, 190, 154, 118, 82, 46, 47, 48, 49, 50, 51, 45, 39, 33, 27, 21, 20, 19, 18, 17]
-        result = []
-        for i, ch in enumerate(text):
-            result.append(f"\x1b[38;5;{colors[i % len(colors)]}m{ch}")
-        result.append("\x1b[0m")
-        return "".join(result)
 
     def _current_version(self) -> str:
         manifest_path = Path(__file__).parent / "_manifest.json"
@@ -530,75 +476,6 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                 return json.loads(resp.read())
         except Exception:
             return None
-
-    # ---- 下载更新 ----
-
-    _GITHUB_PROXY = "https://mirror.ghproxy.com/"
-
-    def _do_update_from_release(self, release: dict[str, Any]) -> None:
-        tag = release.get("tag_name", "unknown")
-        zip_url = f"{self._GITHUB_PROXY}https://github.com/minecraft-dzy/napcat-ai-tools/archive/refs/tags/{tag}.zip"
-        plugin_dir = Path(__file__).parent.resolve()
-
-        self._println(f"  [更新] 正在下载 {tag} ...")
-
-        try:
-            req = urllib.request.Request(zip_url, headers={"User-Agent": "napcat-ai-tools"})
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                zip_data = resp.read()
-        except Exception as e:
-            self._println(f"  [更新] 下载失败: {e}")
-            return
-
-        self._println("  [更新] 正在解压并替换文件 ...")
-
-        try:
-            with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
-                # Github archive 外有一层目录
-                prefix = ""
-                for name in zf.namelist():
-                    parts = name.split("/")
-                    if parts[0]:
-                        prefix = parts[0] + "/"
-                        break
-                with tempfile.TemporaryDirectory() as tmpdir:
-                    tmppath = Path(tmpdir)
-                    for name in zf.namelist():
-                        rel = name[len(prefix):] if prefix and name.startswith(prefix) else name
-                        if not rel or rel.endswith("/"):
-                            continue
-                        dest = tmppath / rel
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        dest.write_bytes(zf.read(name))
-                    # 替换插件文件
-                    for item in tmppath.iterdir():
-                        if item.name == "patches":
-                            continue
-                        dest = plugin_dir / item.name
-                        if item.is_dir():
-                            if dest.exists():
-                                shutil.rmtree(dest, ignore_errors=True)
-                            shutil.copytree(item, dest)
-                        else:
-                            shutil.copy2(item, dest)
-        except Exception as e:
-            self._println(f"  [更新] 解压替换失败: {e}")
-            return
-
-        self._println(self._rainbow("  [更新] 更新完成，即将重启 ..."))
-        time.sleep(2)
-
-        # 重启 MaiBot
-        self._restart_mai()
-
-    @staticmethod
-    def _restart_mai() -> None:
-        try:
-            os.execv(sys.executable, [sys.executable] + sys.argv)
-        except Exception:
-            pass
-        # fallback: 直接 exit，由外部进程管理器重启
-        os._exit(0)
 
     def _save_skipped_version(self, version: str) -> None:
         try:
@@ -1997,31 +1874,15 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
             return self._failure(tool_name, f"设置群禁言失败：{exc}")
 
     async def _maybe_send_appeal_link(self, group_id: str, user_id: str, duration: int) -> str:
-        """生成申诉链接，返回链接字符串。不通过 NapCat 发消息以避免 Uid Error。"""
+        """生成申诉链接，返回链接字符串。全同步，不调任何 NapCat API。"""
         try:
             appeal_id = secrets.token_hex(8)
-            user_name = user_id
-
-            try:
-                info = await self._call_api(
-                    "adapter.napcat.group.get_group_member_info",
-                    group_id=group_id,
-                    user_id=user_id,
-                    no_cache=False,
-                )
-                if isinstance(info, dict):
-                    inner = info.get("data", info)
-                    if isinstance(inner, dict):
-                        user_name = inner.get("card") or inner.get("nickname") or user_id
-            except Exception:
-                pass
-
             now = datetime.datetime.now().isoformat()
             self._appeal_store[appeal_id] = {
                 "appeal_id": appeal_id,
                 "group_id": group_id,
                 "user_id": user_id,
-                "user_name": user_name,
+                "user_name": user_id,
                 "duration": duration,
                 "muted_at": now,
                 "status": "open",
@@ -2029,9 +1890,8 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                 "review_result": "",
             }
             self._save_appeal()
-
             link = f"http://{self.config.appeal.server_ip}:{self.config.appeal.external_port}/appeal/{appeal_id}"
-            self.ctx.logger.info(f"申诉链接已生成 appeal_id={appeal_id} 用户={user_name}({user_id}) 群={group_id} 时长={duration}秒 → {link}")
+            self.ctx.logger.info(f"申诉链接已生成 appeal_id={appeal_id} 群={group_id} 用户={user_id} 时长={duration}秒 → {link}")
             return link
         except Exception:
             return ""
