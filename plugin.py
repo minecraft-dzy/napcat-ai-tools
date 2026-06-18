@@ -108,7 +108,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.6.3", description="配置版本")
+    config_version: str = Field(default="1.6.4", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -592,15 +592,9 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                         f"\n{'='*60}\n"
                         f"[求情通知] 群 {record['group_id']} 的 {record['user_id']}/{record['user_name']} "
                         f"被你禁言了 {record['duration']} 秒，求情：{text}\n"
-                        f"求情ID: {plea_id}（立即调 AI 审核）\n"
+                        f"求情ID: {plea_id}（将在 {plugin_self.config.plea.poll_interval_seconds} 秒内审核）\n"
                         f"{'='*60}"
                     )
-                    # 立即异步审核
-                    threading.Thread(
-                        target=_review_plea_sync,
-                        args=(plugin_self, plea_id),
-                        daemon=True,
-                    ).start()
                     self._send_html(200, _PLEA_SUBMITTED_HTML)
                 else:
                     self._send_html(404, "<h1>Not Found</h1>")
@@ -4825,27 +4819,13 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
         return True, True, None, None, None
 
 
-# ---- 求情 AI 审核 ----
+# ---- 求情 AI 审核轮询器 ----
 
 _DS_API_URL = "https://api.deepseek.com/chat/completions"
 
 
-def _review_plea_sync(plugin: "NapCatAIToolsPlugin", plea_id: str) -> None:
-    """线程入口：立即审核求情。标记 reviewing 防止轮询重复处理。"""
-    rec = plugin._plea_store.get(plea_id)
-    if not rec or rec.get("status") != "pending_review":
-        return
-    plugin._plea_store[plea_id]["status"] = "reviewing"
-    plugin._save_plea()
-    try:
-        asyncio.run(_review_plea(plugin, plea_id))
-    except Exception:
-        plugin._plea_store[plea_id]["status"] = "pending_ai"
-        plugin._save_plea()
-
-
 def _plea_poller_thread(plugin: "NapCatAIToolsPlugin") -> None:
-    """每 N 秒检查 pending_review 的求情（AI 首次调用失败时的重试）。"""
+    """每 N 秒检查 pending_review 的求情，调 AI 审核后自动解禁/拒绝/延长。"""
     import time as _time
     _time.sleep(15)
 
@@ -4859,14 +4839,19 @@ def _plea_poller_thread(plugin: "NapCatAIToolsPlugin") -> None:
             pending = [
                 (pid, rec)
                 for pid, rec in plugin._plea_store.items()
-                if rec.get("status") in ("pending_review", "pending_ai")
+                if rec.get("status") == "pending_review"
             ]
+            if not pending:
+                _time.sleep(interval)
+                continue
+
             for pid, _rec in pending:
-                plugin.ctx.logger.info(f"[求情轮询] 重试审核 plea_id={pid}")
+                plugin.ctx.logger.info(f"[求情轮询] 开始审核 plea_id={pid}")
                 try:
                     asyncio.run(_review_plea(plugin, pid))
                 except Exception as exc:
-                    plugin.ctx.logger.warning(f"[求情轮询] 重试失败 plea_id={pid}: {exc}")
+                    plugin.ctx.logger.warning(f"[求情轮询] 审核失败 plea_id={pid}: {exc}")
+
             _time.sleep(interval)
         except Exception:
             _time.sleep(interval)
@@ -4878,7 +4863,7 @@ async def _review_plea(plugin: "NapCatAIToolsPlugin", plea_id: str) -> None:
     if not record:
         return
     status = str(record.get("status") or "")
-    if status not in ("pending_review", "pending_ai"):
+    if status != "pending_review":
         return
 
     gid = str(record.get("group_id", "")).strip()
@@ -4903,9 +4888,8 @@ async def _review_plea(plugin: "NapCatAIToolsPlugin", plea_id: str) -> None:
 
     decision, ai_msg, result_json = _call_deepseek_with_message(plugin, uid, dur, text, ctx_lines, plea_id, gid)
     if decision is None:
-        # AI 调用失败，标记为 pending_ai 等轮询重试
-        plugin._plea_store[plea_id]["status"] = "pending_ai"
-        plugin._save_plea()
+        # AI 调用失败，保持 pending_review 等下次轮询
+        plugin.ctx.logger.warning(f"[求情AI] plea_id={plea_id} API 调用失败，下次轮询重试")
         return
 
     if decision == "APPROVED":
