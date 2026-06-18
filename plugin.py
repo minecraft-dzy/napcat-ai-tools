@@ -105,7 +105,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.4.3", description="配置版本")
+    config_version: str = Field(default="1.4.4", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -421,16 +421,17 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
         self.ctx.logger.info("NapCat AI 工具插件已加载")
         self._appeal_store_path = Path.cwd() / "data" / "napcat_ai_tools" / "appeal_store.json"
         self._appeal_store = self._load_appeal()
-        if self.config.update.check_updates:
-            asyncio.create_task(self._check_updates())
         if self.config.appeal.enabled and sys.platform == "linux":
             asyncio.create_task(self._start_appeal_server())
+        # 更新检查：全部在独立线程中跑，不依赖 Runner 的 asyncio event loop
+        if self.config.update.check_updates:
+            threading.Thread(target=self._check_updates_sync, daemon=True).start()
 
-    async def _check_updates(self) -> None:
+    def _check_updates_sync(self) -> None:
         try:
-            await asyncio.sleep(2)
+            time.sleep(2)
             current_version = self._current_version()
-            latest = await asyncio.to_thread(self._fetch_latest_release)
+            latest = self._fetch_latest_release()
             if latest is None:
                 self._print_version_line(current_version)
                 return
@@ -442,7 +443,17 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
             if latest_tag == skipped:
                 self._print_version_line(current_version)
                 return
-            await self._show_update_bar(latest_tag, current_version, latest)
+            result = self._run_bar_loop(
+                ["下载更新并重启", "暂不更新", "不再提示"],
+                ["update", "skip", "ignore"],
+                0,
+                latest_tag,
+                current_version,
+            )
+            if result == "update":
+                self._do_update_from_release(latest)
+            elif result == "ignore":
+                self._save_skipped_version(latest_tag)
         except Exception:
             self._print_version_line(self._current_version())
 
@@ -485,16 +496,6 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
     _BAR_HI = "\x1b[48;5;240m\x1b[1m"
     _BAR_OFF = "\x1b[48;5;236m"
     _RESET = "\x1b[0m"
-
-    async def _show_update_bar(self, latest_tag: str, current_version: str, release: dict[str, Any]) -> None:
-        opts = ["下载更新并重启", "暂不更新", "不再提示"]
-        keys = ["update", "skip", "ignore"]
-        selected = 0
-        result = await asyncio.to_thread(self._run_bar_loop, opts, keys, selected, latest_tag, current_version)
-        if result == "update":
-            await asyncio.to_thread(self._do_update_from_release, release)
-        elif result == "ignore":
-            self._save_skipped_version(latest_tag)
 
     def _run_bar_loop(self, opts: list[str], keys: list[str], selected: int, latest: str, current: str) -> str:
         import select as _select_mod
