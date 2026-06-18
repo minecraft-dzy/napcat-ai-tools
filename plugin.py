@@ -108,7 +108,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.6.4", description="配置版本")
+    config_version: str = Field(default="1.6.5", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -561,6 +561,8 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                 path = parsed.path.rstrip("/")
                 if path.startswith("/plea/"):
                     plea_id = path.split("/plea/")[-1]
+                    # 每次都从文件读取最新数据，避免不同 PluginRunner 进程间数据不同步
+                    plugin_self._plea_store = plugin_self._load_plea()
                     record = plugin_self._plea_store.get(plea_id)
                     if not record:
                         self._send_html(410, _PLEA_CLOSED_HTML % ("closed", "🔒 求情已关闭", "该求情链接不存在。", ""))
@@ -3366,9 +3368,9 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
 
     @Tool(
         "napcat_at_user",
-        description="在群聊中 @指定用户并发送消息，对方会收到真正的 @通知提醒。在 message 中使用 @[QQ号] 表达式来 @人，例如 '你好 @[123456]，@[789012] 你怎么看？'。可以 @多个不同的人",
+        description="在群聊中发送消息并可 @指定用户，会发到当前群。使用 @[QQ号] 来 @人，如 '你好 @[123456]！'。如果不写 @[QQ号] 表达式则发送纯文本消息",
         parameters=[
-            ToolParameterInfo(name="message", param_type=ToolParamType.STRING, description="要发送的消息内容，使用 @[QQ号] 表达式表示 @某人，例如：'你好 @[123456]！'", required=True),
+            ToolParameterInfo(name="message", param_type=ToolParamType.STRING, description="消息内容。可选 @[QQ号] 表达式 @人，例如：'你好 @[123456]！'。不写 @ 就是普通群消息", required=True),
             ToolParameterInfo(name="group_id", param_type=ToolParamType.STRING, description="群号，留空则当前群", required=False),
         ],
     )
@@ -3383,11 +3385,18 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
 
             resolved_group_id = self._resolve_group_id(group_id, kwargs)
 
-            # 1) 解析所有 @[QQ号] 表达式
+            # 解析 @[QQ号] 表达式
             at_pattern = re.compile(r"@\[(\d+)\]")
             at_matches = list(at_pattern.finditer(normalized_message))
+
+            # 没有 @ 表达式 → 发纯文本
             if not at_matches:
-                raise ValueError("message 中没有找到 @[QQ号] 表达式。请使用 @[QQ号] 格式来 @指定用户，例如 '你好 @[123456]！'")
+                await self._call_action("send_msg", {
+                    "message_type": "group",
+                    "group_id": self._normalize_id(resolved_group_id, "group_id"),
+                    "message": [{"type": "text", "data": {"text": normalized_message}}],
+                })
+                return self._success(tool_name, f"已在群 {resolved_group_id} 发送消息。")
 
             # 2) 获取当前群成员列表以验证每个 QQ 号
             try:
