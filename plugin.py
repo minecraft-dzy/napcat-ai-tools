@@ -102,7 +102,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.5.4", description="配置版本")
+    config_version: str = Field(default="1.5.5", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -421,6 +421,8 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
         self._plea_store = self._load_plea()
         if self.config.plea.enabled and sys.platform == "linux":
             threading.Thread(target=self._start_plea_server_sync, daemon=True).start()
+            # 求情轮询：每 10s 把待处理的求情推入群聊供 Maisaka 决策
+            threading.Thread(target=_plea_poller_thread, args=(self,), daemon=True).start()
         if self.config.update.check_updates:
             threading.Thread(target=self._update_monitor_thread, daemon=True).start()
 
@@ -552,20 +554,14 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                     plugin_self._plea_store[plea_id]["plea_text"] = text
                     plugin_self._plea_store[plea_id]["status"] = "pending_review"
                     plugin_self._save_plea()
-                    # 通知主程序（终端日志 + 转为群消息触发 Maisaka 处理）
                     plugin_self.ctx.logger.warning(
                         f"\n{'='*60}\n"
                         f"[求情通知] 群 {record['group_id']} 的 {record['user_id']}/{record['user_name']} "
                         f"被你禁言了 {record['duration']} 秒，该用户当前通过求情功能提交了解除禁言请求，"
                         f"求情内容为：{text}\n"
-                        f"求情ID: {plea_id}\n"
+                        f"求情ID: {plea_id}（将在 10 秒内推送给麦麦审核）\n"
                         f"{'='*60}"
                     )
-                    threading.Thread(
-                        target=_send_plea_group_notification,
-                        args=(plugin_self, record, text, plea_id),
-                        daemon=True,
-                    ).start()
                     self._send_html(200, _PLEA_SUBMITTED_HTML)
                 else:
                     self._send_html(404, "<h1>Not Found</h1>")
@@ -4785,148 +4781,81 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
         return True, True, None, None, None
 
 
-# ---- 求情 AI 审核（模块级函数，供 HTTP 线程调用） ----
-
-_DS_API_KEY = "sk-29117610b49d47589124b6e1e2f59a8f"
-_DS_API_URL = "https://api.deepseek.com/chat/completions"
+# ---- 求情轮询器（向群聊推送待处理求情，供 Maisaka 决策） ----
 
 
-def _send_plea_group_notification(
-    plugin: "NapCatAIToolsPlugin",
-    record: dict[str, Any],
-    text: str,
-    plea_id: str,
-) -> None:
-    """求情提交后，调用独立 AI 审核。"""
-    try:
-        asyncio.run(_ai_review_plea(plugin, record, text, plea_id))
-    except Exception:
+def _plea_poller_thread(plugin: "NapCatAIToolsPlugin") -> None:
+    """每 10s 检查 pending_review 的求情，推入群聊触发 Maisaka。"""
+    import time as _time
+    _time.sleep(15)  # 等 HTTP server 先启动
+
+    while True:
         try:
-            plugin.ctx.logger.warning("求情 AI 审核异常，降级为自动通过")
+            pending = [
+                (pid, rec)
+                for pid, rec in plugin._plea_store.items()
+                if rec.get("status") == "pending_review"
+            ]
+            if not pending:
+                _time.sleep(10)
+                continue
+
+            for pid, rec in pending:
+                gid = str(rec.get("group_id", "")).strip()
+                uid = str(rec.get("user_id", "")).strip()
+                dur = rec.get("duration", 0)
+                text = str(rec.get("plea_text", "")).strip()
+
+                # 拉取最近上下文（async, 用 asyncio.run 包住）
+                ctx_lines = ""
+
+                async def _fetch_ctx():
+                    nonlocal ctx_lines
+                    try:
+                        raw = await plugin._call_api(
+                            "adapter.napcat.message.get_group_msg_history",
+                            group_id=gid,
+                            count=20,
+                        )
+                        msgs = _extract_msg_list(raw)
+                        ctx_lines = "\n".join(
+                            f"{m.get('sender_nickname','?')}: {str(m.get('message',''))[:100]}"
+                            for m in msgs[-20:]
+                        )
+                    except Exception:
+                        pass
+
+                try:
+                    asyncio.run(_fetch_ctx())
+                except Exception:
+                    pass
+
+                msg = (
+                    f"[求情推送 #{pid[:8]}] 群{gid} 用户{uid} 被禁言{dur}秒。"
+                    f"求情内容：「{text}」\n"
+                    f"请判断是否通过：napcat_approve_plea(\"{pid}\") 或 napcat_unmute_user(user_id=\"{uid}\")\n"
+                    f"---\n最近群聊：\n{ctx_lines or '(无法获取)'}"
+                )
+
+                plugin.ctx.logger.info(f"[求情轮询] 推送 plea_id={pid} 到群 {gid}")
+                try:
+                    asyncio.run(_push_plea_msg(plugin, gid, msg))
+                    plugin.ctx.logger.info(f"[求情轮询] 成功推送 plea_id={pid}")
+                except Exception as exc:
+                    plugin.ctx.logger.warning(f"[求情轮询] 推送失败 plea_id={pid}: {type(exc).__name__}: {exc}")
+
+            _time.sleep(10)
         except Exception:
-            pass
-        # 降级：自动通过
-        try:
-            asyncio.run(_force_approve_plea(plugin, record, plea_id))
-        except Exception:
-            pass
+            _time.sleep(10)
 
 
-async def _ai_review_plea(
-    plugin: "NapCatAIToolsPlugin",
-    record: dict[str, Any],
-    plea_text: str,
-    plea_id: str,
-) -> None:
-    gid = str(record.get("group_id", "")).strip()
-    uid = str(record.get("user_id", "")).strip()
-    dur = record.get("duration", 0)
-
-    # 获取最近群消息作为上下文
-    recent_msgs = ""
-    try:
-        raw = await plugin._call_api(
-            "adapter.napcat.message.get_group_msg_history",
-            group_id=gid,
-            count=40,
-        )
-        msgs = _extract_msg_list(raw)
-        lines = []
-        for m in msgs[-40:]:
-            sender = m.get("sender_nickname") or m.get("user_id", "?")
-            content = str(m.get("message") or m.get("content") or "")
-            if len(content) > 120:
-                content = content[:120] + "..."
-            lines.append(f"{sender}: {content}")
-        recent_msgs = "\n".join(lines)
-    except Exception:
-        plugin.ctx.logger.warning("获取群消息上下文失败，仅用求情内容判断")
-
-    # 构建提示词
-    prompt = f"""你是一个 QQ 群管理员，负责审核被禁言成员的求情。
-
-背景：
-- 该成员 QQ 号 {uid} 被禁言了 {dur} 秒
-- 禁言是由群主麦麦（AI 机器人）执行的
-- 该成员现在提交了求情，希望解除禁言
-
-该成员求情内容：「{plea_text}」
-
-近期群聊记录（上下文）：
-{recent_msgs or "（无法获取聊天上下文）"}
-
-请基于以上信息，判断该成员的态度是否真诚（认错/友好），是否应该解除禁言。
-- 如果求情态度诚恳/友善/在配合测试，回复 APPROVED
-- 如果求情态度敷衍/不尊重/恶意，回复 DENIED
-- 其他情况回复 DENIED
-
-只回复一个单词：APPROVED 或 DENIED"""
-
-    try:
-        req = urllib.request.Request(
-            _DS_API_URL,
-            data=json.dumps({
-                "model": "deepseek-chat",
-                "messages": [
-                    {"role": "system", "content": "你是一个公正但宽容的群管理员。只回复 APPROVED 或 DENIED。"},
-                    {"role": "user", "content": prompt},
-                ],
-                "max_tokens": 10,
-                "temperature": 0.3,
-            }).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {_DS_API_KEY}",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            body = json.loads(resp.read())
-        decision = body["choices"][0]["message"]["content"].strip().upper()
-    except Exception as exc:
-        plugin.ctx.logger.warning(f"AI 审核调用失败: {exc}")
-        return  # 不处理
-
-    plugin.ctx.logger.info(f"[求情审核] ID={plea_id} AI 判定: {decision}")
-
-    if "APPROVED" in decision:
-        await _force_approve_plea(plugin, record, plea_id)
-    else:
-        plugin._plea_store[plea_id]["status"] = "closed"
-        plugin._plea_store[plea_id]["review_result"] = f"ai_denied:{decision}"
-        plugin._save_plea()
-        plugin.ctx.logger.warning(
-            f"\n{'='*60}\n"
-            f"[求情拒绝] 群 {gid} {uid} 求情「{plea_text}」已被 AI 拒绝\n"
-            f"{'='*60}"
-        )
-
-
-async def _force_approve_plea(
-    plugin: "NapCatAIToolsPlugin",
-    record: dict[str, Any],
-    plea_id: str,
-) -> None:
-    gid = str(record.get("group_id", "")).strip()
-    uid = str(record.get("user_id", "")).strip()
-    dur = record.get("duration", 0)
-    plea_text = str(record.get("plea_text", "")).strip()
-
-    result = await plugin._call_api(
-        "adapter.napcat.group.set_group_ban",
-        group_id=gid,
-        user_id=uid,
-        duration=0,
-    )
-    plugin._plea_store[plea_id]["status"] = "closed"
-    plugin._plea_store[plea_id]["review_result"] = "ai_approved"
-    plugin._save_plea()
-
-    action_status = plugin._action_status_text(result)
-    plugin.ctx.logger.warning(
-        f"\n{'='*60}\n"
-        f"[求情通过] 群 {gid} {uid} 求情「{plea_text}」已解除禁言（被禁 {dur} 秒）{action_status}\n"
-        f"{'='*60}"
-    )
+async def _push_plea_msg(plugin: "NapCatAIToolsPlugin", group_id: str, msg: str) -> None:
+    """发送纯文本到群聊。"""
+    await plugin._call_action("send_msg", {
+        "message_type": "group",
+        "group_id": plugin._normalize_id(group_id, "group_id"),
+        "message": [{"type": "text", "data": {"text": msg}}],
+    })
 
 
 def _extract_msg_list(raw: Any) -> list[dict[str, Any]]:
