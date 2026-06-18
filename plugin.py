@@ -102,7 +102,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.4.7", description="配置版本")
+    config_version: str = Field(default="1.4.8", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -528,7 +528,7 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                     if not record or record["status"] != "open":
                         self._send_html(410, _PLEA_CLOSED_HTML)
                         return
-                    self._send_html(200, _PLEA_FORM_HTML % (plea_id, record["user_name"], record["duration"]))
+                    self._send_html(200, _PLEA_FORM_HTML % (record["user_name"], record["duration"], plea_id))
                 else:
                     self._send_html(404, "<h1>Not Found</h1>")
 
@@ -546,7 +546,7 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                     params = parse_qs(body)
                     text = (params.get("plea_text", [""])[0] or "").strip()
                     if not text or len(text) < 2:
-                        self._send_html(200, _PLEA_FORM_HTML % (plea_id, record["user_name"], record["duration"]) + "<script>alert('求情内容不能为空');</script>")
+                        self._send_html(200, _PLEA_FORM_HTML % (record["user_name"], record["duration"], plea_id) + "<script>alert('求情内容不能为空');</script>")
                         return
                     plugin_self._plea_store[plea_id]["plea_text"] = text
                     plugin_self._plea_store[plea_id]["status"] = "pending_review"
