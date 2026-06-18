@@ -102,7 +102,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.4.9", description="配置版本")
+    config_version: str = Field(default="1.5.0", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -4761,11 +4761,14 @@ def _send_plea_group_notification(
     text: str,
     plea_id: str,
 ) -> None:
-    """将求情通知转为 QQ 群消息，触发 Maisaka 处理。"""
+    """将求情通知转为 QQ 群消息，触发 Maisaka 处理。使用 plugin.ctx.send.text 跨线程 RPC。"""
     try:
         asyncio.run(_async_send_plea_notification(plugin, record, text, plea_id))
-    except Exception:
-        pass
+    except Exception as exc:
+        try:
+            plugin.ctx.logger.warning(f"求情群消息发送失败: {exc}")
+        except Exception:
+            pass
 
 
 async def _async_send_plea_notification(
@@ -4774,23 +4777,18 @@ async def _async_send_plea_notification(
     text: str,
     plea_id: str,
 ) -> None:
-    try:
-        gid = str(record.get("group_id", "")).strip()
-        uid = str(record.get("user_id", "")).strip()
-        name = str(record.get("user_name", uid)).strip()
-        dur = record.get("duration", 0)
-        msg = (
-            f"[求情通知] {name}({uid}) 提交了解除禁言求情（被禁言 {dur} 秒）。"
-            f"求情内容：「{text}」"
-            f"推荐审核：napcat_approve_plea(\"{plea_id}\")"
-        )
-        await plugin._call_action("send_msg", {
-            "message_type": "group",
-            "group_id": plugin._normalize_id(gid, "group_id"),
-            "message": [{"type": "text", "data": {"text": msg}}],
-        })
-    except Exception:
-        pass
+    gid = str(record.get("group_id", "")).strip()
+    uid = str(record.get("user_id", "")).strip()
+    name = str(record.get("user_name", uid)).strip()
+    dur = record.get("duration", 0)
+    msg = (
+        f"[求情通知] {name}({uid}) 提交了解除禁言求情（被禁言 {dur} 秒）。"
+        f"求情内容：「{text}」"
+        f"推荐审核：napcat_approve_plea(\"{plea_id}\")"
+    )
+    session_id = f"qq_group_{gid}"
+    await plugin.ctx.send.text(msg, session_id)
+    plugin.ctx.logger.info(f"求情通知已发入群 {gid} session={session_id}")
 
 
 def create_plugin() -> NapCatAIToolsPlugin:
