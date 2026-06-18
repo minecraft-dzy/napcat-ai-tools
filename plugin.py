@@ -102,7 +102,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.5.8", description="配置版本")
+    config_version: str = Field(default="1.5.9", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -1855,11 +1855,15 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
 
     @Tool(
         "napcat_set_group_ban",
-        description="设置群成员禁言；duration_seconds 为 0 表示解除禁言，高风险操作，麦麦会结合上下文自行判断",
+        description=(
+            "【推荐优先使用】禁言/解禁群成员。请不要使用mute工具（mute有bug会误判角色），"
+            "用这个工具代替mute。可以直接按user_id禁言任意普通成员，群主可以禁言任何人。"
+            "duration_seconds=0为解除禁言，>0为禁言秒数。禁言时会自动生成求情链接。"
+        ),
         parameters=[
             ToolParameterInfo(name="group_id", param_type=ToolParamType.STRING, description="群号，留空则优先当前群", required=False),
             ToolParameterInfo(name="user_id", param_type=ToolParamType.STRING, description="目标成员 QQ 号", required=True),
-            ToolParameterInfo(name="duration_seconds", param_type=ToolParamType.INTEGER, description="禁言秒数，0 为解禁", required=True),
+            ToolParameterInfo(name="duration_seconds", param_type=ToolParamType.INTEGER, description="禁言秒数，0 为解禁，>0 禁言", required=True),
         ],
     )
     async def tool_set_group_ban(
