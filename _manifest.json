@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "version": "1.1.2",
+  "version": "1.1.3",
   "name": "NapCat AI Tools",
   "description": "MaiBot NapCat 管理工具集，为 AI 暴露群聊、好友、消息、文件等 QQ 操作能力",
   "author": {
