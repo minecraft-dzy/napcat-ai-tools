@@ -102,7 +102,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.5.3", description="配置版本")
+    config_version: str = Field(default="1.5.4", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -382,7 +382,8 @@ _TOOL_SWITCH_ATTRS = {
     "napcat_forward_friend_single_msg": ("message_tools", "forward_friend_single_msg"),
     "napcat_forward_group_single_msg": ("message_tools", "forward_group_single_msg"),
     "napcat_list_pleas": ("plea", "enabled"),
-    "napcat_approve_plea": ("plea", "enabled"),
+    "napcat_approve_plea": ("group_manage_tools", "set_group_ban"),  # 跟随禁言开关
+    "napcat_unmute_user": ("group_manage_tools", "set_group_ban"),  # 解除禁言
 }
 
 class NapCatAIToolsConfig(PluginConfigBase):
@@ -667,6 +668,37 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
             return self._success(tool_name, content, data=result)
         except Exception as exc:
             return self._failure(tool_name, f"审核求情失败：{exc}")
+
+    @Tool(
+        "napcat_unmute_user",
+        description="解除群成员的禁言，相当于对用户取消禁言。当有人请求解禁/解封/取消禁言时使用。",
+        parameters=[
+            ToolParameterInfo(name="group_id", param_type=ToolParamType.STRING, description="群号，留空则优先当前群", required=False),
+            ToolParameterInfo(name="user_id", param_type=ToolParamType.STRING, description="目标成员 QQ 号", required=True),
+        ],
+    )
+    async def tool_unmute_user(
+        self,
+        user_id: str = "",
+        group_id: str = "",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        del kwargs
+        tool_name = "napcat_unmute_user"
+        self._ensure_tool_enabled(tool_name)
+        try:
+            resolved_group_id = self._resolve_group_id(group_id, kwargs)
+            resolved_user_id = self._resolve_user_id(user_id, kwargs)
+            result = await self._call_api(
+                "adapter.napcat.group.set_group_ban",
+                group_id=resolved_group_id,
+                user_id=resolved_user_id,
+                duration=0,
+            )
+            content = f"已解除群 {resolved_group_id} 成员 {resolved_user_id} 的禁言。{self._action_status_text(result)}"
+            return self._success(tool_name, content, data=result)
+        except Exception as exc:
+            return self._failure(tool_name, f"解除禁言失败：{exc}")
 
     async def on_unload(self) -> None:
         await self._stop_plea_server()
