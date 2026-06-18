@@ -108,7 +108,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.6.0", description="配置版本")
+    config_version: str = Field(default="1.6.1", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -549,7 +549,11 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                     return _PLEA_CLOSED_HTML % ("approved", "✅ 求情已通过", "麦麦已解除你的禁言。" + (f" 附言：{ai_msg}" if ai_msg else ""), msg_block)
                 if status in ("denied",):
                     msg_block = f'<div class="ai-msg">💬 麦麦说：{ai_msg}</div>' if ai_msg else ""
-                    return _PLEA_CLOSED_HTML % ("denied", "❌ 求情被拒绝", "麦麦认为你的求情不够诚恳，暂不解禁。" + (f" 附言：{ai_msg}" if ai_msg else ""), msg_block)
+                    extra_info = ""
+                    if "extended" in review:
+                        new_dur = record.get("duration", 0)
+                        extra_info = f" 禁言已延长至 {new_dur} 秒。"
+                    return _PLEA_CLOSED_HTML % ("denied", "❌ 求情被拒绝", "麦麦拒绝了你的求情。" + extra_info, msg_block)
                 return _PLEA_CLOSED_HTML % ("closed", "🔒 求情已关闭", "该求情链接已失效或已被处理。", "")
 
             def do_GET(self):
@@ -4891,7 +4895,7 @@ async def _review_plea(plugin: "NapCatAIToolsPlugin", plea_id: str) -> None:
     except Exception:
         pass
 
-    decision, ai_msg = _call_deepseek_with_message(plugin, uid, dur, text, ctx_lines, plea_id, gid)
+    decision, ai_msg, result_json = _call_deepseek_with_message(plugin, uid, dur, text, ctx_lines, plea_id, gid)
     if decision is None:
         # AI 调用失败，标记为 pending_ai 等轮询重试
         plugin._plea_store[plea_id]["status"] = "pending_ai"
@@ -4901,6 +4905,10 @@ async def _review_plea(plugin: "NapCatAIToolsPlugin", plea_id: str) -> None:
     if decision == "APPROVED":
         record["ai_message"] = ai_msg
         await _approve_plea(plugin, record, plea_id)
+    elif decision == "EXTEND":
+        record["ai_message"] = ai_msg
+        extra_seconds = int(result_json.get("extra_seconds", 0)) if result_json else 0
+        await _extend_mute(plugin, record, plea_id, extra_seconds)
     elif decision == "NO_KEY":
         record["ai_message"] = "（自动通过，未配置审核 AI）"
         await _approve_plea(plugin, record, plea_id)
@@ -4925,18 +4933,22 @@ def _call_deepseek_with_message(
             pass
     if not api_key:
         plugin.ctx.logger.info(f"[求情AI] 无 API Key，直接通过 plea_id={plea_id}")
-        return "NO_KEY", ""
+        return "NO_KEY", "", {}
 
     prompt = (
         f"你是一个 QQ 群（群号 {gid}）的管理员，正在审核被禁言成员的求情。\n\n"
         f"背景：成员 {uid} 被禁言 {dur} 秒，在求情页面提交了以下内容：\n"
         f"「{plea_text}」\n\n"
         f"近期群聊记录：\n{ctx_lines or '(无法获取)'}\n\n"
-        f"请根据求情内容和群聊上下文判断是否同意解除禁言。\n"
-        f"- 如果求情态度诚恳/友善/配合测试/正常交流 → 同意解禁\n"
-        f"- 如果态度敷衍/恶意/侮辱 → 拒绝\n\n"
-        f"请用 JSON 格式回复，只包含 decision 和 message 两个字段：\n"
-        f'{{"decision": "APPROVED", "message": "你说的话，比如：行吧原谅你了 / 不行态度不够诚恳"}}'
+        f"请根据求情内容和群聊上下文判断：\n"
+        f"- 如果态度诚恳/友善/配合测试/正常交流 → 同意解禁\n"
+        f"- 如果态度敷衍/恶意/包含侮辱性语言 → 拒绝\n"
+        f"- 如果包含明显的骂人、人身攻击、侮辱内容 → 不仅拒绝，还要额外增加禁言时间\n\n"
+        f"用 JSON 回复，只包含 decision, message, extra_seconds 三个字段：\n"
+        f'{{"decision": "APPROVED", "message": "你说的群回复语", "extra_seconds": 0}}\n'
+        f'{{"decision": "DENIED", "message": "你说的群回复语", "extra_seconds": 0}}\n'
+        f'{{"decision": "EXTEND", "message": "你说的群回复语（如：骂人再加300秒）", "extra_seconds": 300}}\n'
+        f"decision 只能是 APPROVED/DENIED/EXTEND 之一。extra_seconds 仅在 EXTEND 时有效，表示额外增加秒数。"
     )
 
     plugin.ctx.logger.info(f"[求情AI] plea_id={plea_id} 请求 DeepSeek...")
@@ -4946,10 +4958,10 @@ def _call_deepseek_with_message(
             data=json.dumps({
                 "model": "deepseek-chat",
                 "messages": [
-                    {"role": "system", "content": "你是友好但公正的 QQ 群管理员。只回复 JSON，不要多余内容。"},
+                    {"role": "system", "content": "你是公正的 QQ 群管理员。只回复 JSON，不要多余内容。"},
                     {"role": "user", "content": prompt},
                 ],
-                "max_tokens": 200,
+                "max_tokens": 300,
                 "temperature": 0.7,
             }).encode("utf-8"),
             headers={
@@ -4960,20 +4972,85 @@ def _call_deepseek_with_message(
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = json.loads(resp.read())
         raw = body["choices"][0]["message"]["content"].strip()
-        plugin.ctx.logger.info(f"[求情AI] plea_id={plea_id} DeepSeek 返回: {raw[:120]}")
-        # 解析 JSON
+        plugin.ctx.logger.info(f"[求情AI] plea_id={plea_id} DeepSeek 返回: {raw[:200]}")
         try:
             result = json.loads(raw)
         except json.JSONDecodeError:
-            # 尝试从文本中提取
-            import re
             decision = "APPROVED" if "APPROVED" in raw.upper() else "DENIED"
-            msg = raw
-            return decision, msg
-        return result.get("decision", "DENIED").upper(), result.get("message", "")
+            return decision, raw, {}
+        dec = result.get("decision", "DENIED").upper()
+        msg = result.get("message", "")
+        return dec, msg, result
     except Exception as exc:
         plugin.ctx.logger.warning(f"[求情AI] DeepSeek API 失败: {exc}")
-        return None, None
+        return None, None, None
+
+
+async def _extend_mute(
+    plugin: "NapCatAIToolsPlugin",
+    record: dict[str, Any],
+    plea_id: str,
+    extra_seconds: int,
+) -> None:
+    """延长禁言：先解禁等待 1 秒，再以新时长重新禁言。"""
+    import time as _time
+    gid = str(record.get("group_id", "")).strip()
+    uid = str(record.get("user_id", "")).strip()
+    orig_dur = record.get("duration", 0)
+    ai_msg = str(record.get("ai_message") or "").strip()
+    extra = max(0, int(extra_seconds or 0))
+
+    # 计算已过去的禁言时间
+    muted_at_str = str(record.get("muted_at") or "")
+    elapsed = 0
+    if muted_at_str:
+        try:
+            muted_at = datetime.datetime.fromisoformat(muted_at_str)
+            elapsed = int((datetime.datetime.now() - muted_at).total_seconds())
+        except Exception:
+            pass
+
+    # 新禁言时长 = 原始 - 已过 + 额外，最少 60 秒
+    new_dur = max(60, orig_dur - elapsed + extra)
+
+    # 1. 解禁
+    await plugin._call_api(
+        "adapter.napcat.group.set_group_ban",
+        group_id=gid, user_id=uid, duration=0,
+    )
+    # 2. 等待 1 秒让解禁生效
+    await asyncio.sleep(1)
+    # 3. 重新禁言
+    result = await plugin._call_api(
+        "adapter.napcat.group.set_group_ban",
+        group_id=gid, user_id=uid, duration=new_dur,
+    )
+
+    plugin._plea_store[plea_id]["status"] = "denied"
+    plugin._plea_store[plea_id]["review_result"] = f"ai_extended:+{extra}s"
+    plugin._plea_store[plea_id]["duration"] = new_dur
+    plugin._plea_store[plea_id]["muted_at"] = datetime.datetime.now().isoformat()
+    plugin._save_plea()
+
+    action_status = plugin._action_status_text(result)
+    plugin.ctx.logger.warning(
+        f"\n{'='*60}\n"
+        f"[禁言延长] 群 {gid} {uid} 原禁言 {orig_dur}s，已过 {elapsed}s，额外 +{extra}s，"
+        f"重新禁言 {new_dur}s {action_status}\n"
+        f"AI 消息: {ai_msg}\n"
+        f"{'='*60}"
+    )
+
+    # 发送 AI 消息到群
+    if ai_msg:
+        try:
+            await plugin._call_action("send_msg", {
+                "message_type": "group",
+                "group_id": plugin._normalize_id(gid, "group_id"),
+                "message": [{"type": "text", "data": {"text": ai_msg}}],
+            })
+        except Exception as exc:
+            plugin.ctx.logger.warning(f"[禁言延长] 发送 AI 消息到群失败: {exc}")
 
 
 async def _approve_plea(
