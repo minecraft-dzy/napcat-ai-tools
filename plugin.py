@@ -28,12 +28,12 @@ def _ui_field(description: str, *, default: bool = True):
     return Field(default=default, description=description, json_schema_extra={"label": description, "hint": description})
 
 
-# ---- 申诉页面 HTML 模板 ----
+# ---- 求情页面 HTML 模板 ----
 
-_APPEAL_FORM_HTML = """<!DOCTYPE html>
+_PLEA_FORM_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>禁言申诉</title>
+<title>向麦麦认错</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,sans-serif;background:#f0f4f8;display:flex;justify-content:center;align-items:center;min-height:100vh;padding:20px}
@@ -48,19 +48,19 @@ textarea:focus{border-color:#6c5ce7}
 </style></head>
 <body>
 <div class="card">
-<h1>📩 禁言申诉</h1>
+<h1>🥺 向麦麦求情</h1>
 <p class="meta">被禁言用户：<span>%s</span> &nbsp; 禁言时长：<b>%s</b> 秒</p>
-<form method="POST" action="/appeal/%s">
-<textarea name="appeal_text" placeholder="请输入申诉内容，说明认错理由或请求解除禁言..." required></textarea>
-<button class="btn" type="submit">提交申诉</button>
+<form method="POST" action="/plea/%s">
+<textarea name="plea_text" placeholder="向麦麦认错求情，说点好听的..." required></textarea>
+<button class="btn" type="submit">提交求情</button>
 </form>
 </div>
 </body></html>"""
 
-_APPEAL_SUBMITTED_HTML = """<!DOCTYPE html>
+_PLEA_SUBMITTED_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>申诉已提交</title>
+<title>求情已提交</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,sans-serif;background:#f0f4f8;display:flex;justify-content:center;align-items:center;min-height:100vh;padding:20px}
@@ -70,15 +70,15 @@ p{color:#636e72;font-size:15px}
 </style></head>
 <body>
 <div class="card">
-<h1>✔ 申诉已提交</h1>
-<p>你的申诉已成功提交，管理员将尽快审核处理。</p>
+<h1>✔ 求情已提交</h1>
+<p>你的求情已成功提交，麦麦将尽快审核处理。</p>
 </div>
 </body></html>"""
 
-_APPEAL_CLOSED_HTML = """<!DOCTYPE html>
+_PLEA_CLOSED_HTML = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>申诉已关闭</title>
+<title>求情已关闭</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,sans-serif;background:#f0f4f8;display:flex;justify-content:center;align-items:center;min-height:100vh;padding:20px}
@@ -88,8 +88,8 @@ p{color:#636e72;font-size:15px}
 </style></head>
 <body>
 <div class="card">
-<h1>🔒 申诉已关闭</h1>
-<p>该申诉链接已失效或已被处理。</p>
+<h1>🔒 求情已关闭</h1>
+<p>该求情链接已失效或已被处理。</p>
 </div>
 </body></html>"""
 
@@ -102,7 +102,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.4.6", description="配置版本")
+    config_version: str = Field(default="1.4.7", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -130,16 +130,16 @@ class SafetyConfig(PluginConfigBase):
     command_confirm_qq: str = Field(default="", description='命令执行需要该 QQ 发送"执行"确认，为空则不限制')
 
 
-class AppealConfig(PluginConfigBase):
-    """禁言申诉配置。"""
+class PleaConfig(PluginConfigBase):
+    """禁言求情配置。"""
 
-    __ui_label__ = "申诉"
+    __ui_label__ = "求情"
     __ui_icon__ = "mail"
     __ui_order__ = 3
 
-    enabled: bool = _ui_field("启用禁言申诉功能（仅Linux生效）")
-    server_ip: str = Field(default="47.100.213.47", description="申诉服务器绑定的IP地址")
-    port: int = Field(default=8090, description="申诉服务器端口，0=自动选择")
+    enabled: bool = _ui_field("启用禁言求情功能（仅Linux生效）")
+    server_ip: str = Field(default="47.100.213.47", description="求情服务器IP")
+    port: int = Field(default=8090, description="求情服务器端口，0=自动选择")
     external_port: int = Field(default=8090, description="对外显示的端口")
 
 
@@ -381,8 +381,8 @@ _TOOL_SWITCH_ATTRS = {
     "napcat_get_group_msg_history": ("message_tools", "get_group_msg_history"),
     "napcat_forward_friend_single_msg": ("message_tools", "forward_friend_single_msg"),
     "napcat_forward_group_single_msg": ("message_tools", "forward_group_single_msg"),
-    "napcat_list_appeals": ("appeal", "enabled"),
-    "napcat_approve_appeal": ("appeal", "enabled"),
+    "napcat_list_pleas": ("plea", "enabled"),
+    "napcat_approve_plea": ("plea", "enabled"),
 }
 
 class NapCatAIToolsConfig(PluginConfigBase):
@@ -399,7 +399,7 @@ class NapCatAIToolsConfig(PluginConfigBase):
     profile_ai_tools: ProfileAIToolConfig = Field(default_factory=ProfileAIToolConfig)
     file_tools: FileToolConfig = Field(default_factory=FileToolConfig)
     update: UpdateConfig = Field(default_factory=UpdateConfig)
-    appeal: AppealConfig = Field(default_factory=AppealConfig)
+    plea: PleaConfig = Field(default_factory=PleaConfig)
 
 
 class NapCatAIToolsPlugin(MaiBotPlugin):
@@ -410,25 +410,25 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
 
     # ---- 更新检查 ----
 
-    _appeal_store: dict[str, dict[str, Any]] = {}
-    _appeal_server: Optional[HTTPServer] = None
-    _appeal_store_path: Optional[Path] = None
+    _plea_store: dict[str, dict[str, Any]] = {}
+    _plea_server: Optional[HTTPServer] = None
+    _plea_store_path: Optional[Path] = None
 
     async def on_load(self) -> None:
         self.ctx.logger.info("NapCat AI 工具插件已加载")
-        self._appeal_store_path = Path.cwd() / "data" / "napcat_ai_tools" / "appeal_store.json"
-        self._appeal_store = self._load_appeal()
-        if self.config.appeal.enabled and sys.platform == "linux":
-            threading.Thread(target=self._start_appeal_server_sync, daemon=True).start()
+        self._plea_store_path = Path.cwd() / "data" / "napcat_ai_tools" / "plea_store.json"
+        self._plea_store = self._load_plea()
+        if self.config.plea.enabled and sys.platform == "linux":
+            threading.Thread(target=self._start_plea_server_sync, daemon=True).start()
         if self.config.update.check_updates:
             threading.Thread(target=self._update_monitor_thread, daemon=True).start()
 
-    # ---- 申诉服务器（同步线程） ----
+    # ---- 求情服务器（同步线程） ----
 
-    def _start_appeal_server_sync(self) -> None:
-        self._appeal_store_path = Path.cwd() / "data" / "napcat_ai_tools" / "appeal_store.json"
-        self._appeal_store = self._load_appeal()
-        asyncio.run(self._start_appeal_server())
+    def _start_plea_server_sync(self) -> None:
+        self._plea_store_path = Path.cwd() / "data" / "napcat_ai_tools" / "plea_store.json"
+        self._plea_store = self._load_plea()
+        asyncio.run(self._start_plea_server())
 
     # ---- 更新监视线程（注入到主进程空间，bypass Runner event loop） ----
 
@@ -484,32 +484,32 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
         except Exception:
             pass
 
-    # ---- 禁言申诉系统 ----
+    # ---- 禁言求情系统 ----
 
-    def _load_appeal(self) -> dict[str, dict[str, Any]]:
-        if self._appeal_store_path and self._appeal_store_path.exists():
+    def _load_plea(self) -> dict[str, dict[str, Any]]:
+        if self._plea_store_path and self._plea_store_path.exists():
             try:
-                data = json.loads(self._appeal_store_path.read_text(encoding="utf-8"))
+                data = json.loads(self._plea_store_path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
                     return {k: v for k, v in data.items() if isinstance(v, dict)}
             except Exception:
                 pass
         return {}
 
-    def _save_appeal(self) -> None:
-        if self._appeal_store_path:
+    def _save_plea(self) -> None:
+        if self._plea_store_path:
             try:
-                self._appeal_store_path.parent.mkdir(parents=True, exist_ok=True)
-                self._appeal_store_path.write_text(json.dumps(self._appeal_store, ensure_ascii=False, indent=2), encoding="utf-8")
+                self._plea_store_path.parent.mkdir(parents=True, exist_ok=True)
+                self._plea_store_path.write_text(json.dumps(self._plea_store, ensure_ascii=False, indent=2), encoding="utf-8")
             except Exception as exc:
-                self.ctx.logger.warning(f"持久化申诉数据失败: {exc}")
+                self.ctx.logger.warning(f"持久化求情数据失败: {exc}")
 
-    async def _start_appeal_server(self) -> None:
-        if self._appeal_server is not None:
+    async def _start_plea_server(self) -> None:
+        if self._plea_server is not None:
             return
         plugin_self = self  # noqa
 
-        class _AppealHandler(BaseHTTPRequestHandler):
+        class _PleaHandler(BaseHTTPRequestHandler):
             def log_message(self, fmt, *args):
                 pass  # 静默日志
 
@@ -522,127 +522,127 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
             def do_GET(self):
                 parsed = urlparse(self.path)
                 path = parsed.path.rstrip("/")
-                if path.startswith("/appeal/"):
-                    appeal_id = path.split("/appeal/")[-1]
-                    record = plugin_self._appeal_store.get(appeal_id)
+                if path.startswith("/plea/"):
+                    plea_id = path.split("/plea/")[-1]
+                    record = plugin_self._plea_store.get(plea_id)
                     if not record or record["status"] != "open":
-                        self._send_html(410, _APPEAL_CLOSED_HTML)
+                        self._send_html(410, _PLEA_CLOSED_HTML)
                         return
-                    self._send_html(200, _APPEAL_FORM_HTML % (appeal_id, record["user_name"], record["duration"]))
+                    self._send_html(200, _PLEA_FORM_HTML % (plea_id, record["user_name"], record["duration"]))
                 else:
                     self._send_html(404, "<h1>Not Found</h1>")
 
             def do_POST(self):
                 parsed = urlparse(self.path)
                 path = parsed.path.rstrip("/")
-                if path.startswith("/appeal/"):
-                    appeal_id = path.split("/appeal/")[-1]
-                    record = plugin_self._appeal_store.get(appeal_id)
+                if path.startswith("/plea/"):
+                    plea_id = path.split("/plea/")[-1]
+                    record = plugin_self._plea_store.get(plea_id)
                     if not record or record["status"] != "open":
-                        self._send_html(410, _APPEAL_CLOSED_HTML)
+                        self._send_html(410, _PLEA_CLOSED_HTML)
                         return
                     content_len = int(self.headers.get("Content-Length", 0))
                     body = self.rfile.read(content_len).decode("utf-8")
                     params = parse_qs(body)
-                    text = (params.get("appeal_text", [""])[0] or "").strip()
+                    text = (params.get("plea_text", [""])[0] or "").strip()
                     if not text or len(text) < 2:
-                        self._send_html(200, _APPEAL_FORM_HTML % (appeal_id, record["user_name"], record["duration"]) + "<script>alert('申诉内容不能为空');</script>")
+                        self._send_html(200, _PLEA_FORM_HTML % (plea_id, record["user_name"], record["duration"]) + "<script>alert('求情内容不能为空');</script>")
                         return
-                    plugin_self._appeal_store[appeal_id]["appeal_text"] = text
-                    plugin_self._appeal_store[appeal_id]["status"] = "pending_review"
-                    plugin_self._save_appeal()
+                    plugin_self._plea_store[plea_id]["plea_text"] = text
+                    plugin_self._plea_store[plea_id]["status"] = "pending_review"
+                    plugin_self._save_plea()
                     # 通知主程序
                     plugin_self.ctx.logger.warning(
                         f"\n{'='*60}\n"
-                        f"[申诉通知] 群 {record['group_id']} 的 {record['user_id']}/{record['user_name']} "
-                        f"被你禁言了 {record['duration']} 秒，该用户当前通过申诉功能提交了解除禁言申请，"
-                        f"申请内容为：{text}\n"
-                        f"申请ID: {appeal_id}\n"
+                        f"[求情通知] 群 {record['group_id']} 的 {record['user_id']}/{record['user_name']} "
+                        f"被你禁言了 {record['duration']} 秒，该用户当前通过求情功能提交了解除禁言请求，"
+                        f"求情内容为：{text}\n"
+                        f"求情ID: {plea_id}\n"
                         f"{'='*60}"
                     )
-                    self._send_html(200, _APPEAL_SUBMITTED_HTML)
+                    self._send_html(200, _PLEA_SUBMITTED_HTML)
                 else:
                     self._send_html(404, "<h1>Not Found</h1>")
 
         ip = "0.0.0.0"  # 绑定所有接口，外部通过 server_ip 访问
-        port = self.config.appeal.port
-        display_ip = self.config.appeal.server_ip
+        port = self.config.plea.port
+        display_ip = self.config.plea.server_ip
         for _ in range(5):
             try:
-                self._appeal_server = HTTPServer((ip, port), _AppealHandler)
+                self._plea_server = HTTPServer((ip, port), _PleaHandler)
                 break
             except OSError:
                 port += 1
-                self.config.appeal.external_port = port
-        if self._appeal_server is None:
-            self.ctx.logger.error(f"申诉服务器启动失败：无法绑定端口 {display_ip}:{self.config.appeal.external_port}")
+                self.config.plea.external_port = port
+        if self._plea_server is None:
+            self.ctx.logger.error(f"求情服务器启动失败：无法绑定端口 {display_ip}:{self.config.plea.external_port}")
             return
-        self.ctx.logger.info(f"申诉服务器已启动: http://{display_ip}:{self.config.appeal.external_port}")
-        await asyncio.to_thread(self._appeal_server.serve_forever)
+        self.ctx.logger.info(f"求情服务器已启动: http://{display_ip}:{self.config.plea.external_port}")
+        await asyncio.to_thread(self._plea_server.serve_forever)
 
-    async def _stop_appeal_server(self) -> None:
-        if self._appeal_server is not None:
+    async def _stop_plea_server(self) -> None:
+        if self._plea_server is not None:
             try:
-                self._appeal_server.shutdown()
-                self._appeal_server = None
-                self.ctx.logger.info("申诉服务器已停止")
+                self._plea_server.shutdown()
+                self._plea_server = None
+                self.ctx.logger.info("求情服务器已停止")
             except Exception:
                 pass
 
     @Tool(
-        "napcat_list_appeals",
-        description="查看当前待处理的禁言申诉列表",
+        "napcat_list_pleas",
+        description="查看当前待处理的禁言求情列表",
         parameters=[
-            ToolParameterInfo(name="status", param_type=ToolParamType.STRING, description="筛选状态: open(未提交申诉)/pending_review(待审核)/closed(已关闭)，留空=全部", required=False),
+            ToolParameterInfo(name="status", param_type=ToolParamType.STRING, description="筛选状态: open(未提交)/pending_review(待审核)/closed(已关闭)，留空=全部", required=False),
         ],
     )
-    async def tool_list_appeals(self, status: str = "", **kwargs: Any) -> dict[str, Any]:
+    async def tool_list_pleas(self, status: str = "", **kwargs: Any) -> dict[str, Any]:
         del kwargs
-        tool_name = "napcat_list_appeals"
+        tool_name = "napcat_list_pleas"
         self._ensure_tool_enabled(tool_name)
         try:
-            items = list(self._appeal_store.values())
+            items = list(self._plea_store.values())
             if status:
                 items = [i for i in items if i.get("status") == status]
             items.sort(key=lambda x: x.get("muted_at", ""), reverse=True)
             preview = items[:30]
             lines = []
             for item in preview:
-                aid = item.get("appeal_id", "")[:12]
+                aid = item.get("plea_id", "")[:12]
                 gid = item.get("group_id", "")
                 uid = item.get("user_id", "")
                 name = item.get("user_name", "")
                 dur = item.get("duration", 0)
                 st = item.get("status", "")
-                appeal_text = (item.get("appeal_text") or "")[:40]
+                plea_text = (item.get("plea_text") or "")[:40]
                 lines.append(
                     f"- [{st}] 群{gid} {name}({uid}) 禁言{dur}秒 "
                     f"ID={aid}"
                 )
-                if appeal_text:
-                    lines.append(f"  申诉内容: {appeal_text}")
-            content = f"当前申诉共 {len(self._appeal_store)} 条，展示 {len(preview)} 条：\n" + ("\n".join(lines) or "无")
-            return self._success(tool_name, content, data={"total": len(self._appeal_store), "items": preview})
+                if plea_text:
+                    lines.append(f"  求情内容: {plea_text}")
+            content = f"当前求情共 {len(self._plea_store)} 条，展示 {len(preview)} 条：\n" + ("\n".join(lines) or "无")
+            return self._success(tool_name, content, data={"total": len(self._plea_store), "items": preview})
         except Exception as exc:
-            return self._failure(tool_name, f"获取申诉列表失败：{exc}")
+            return self._failure(tool_name, f"获取求情列表失败：{exc}")
 
     @Tool(
-        "napcat_approve_appeal",
-        description="审核通过申诉，自动解除禁言并通知用户",
+        "napcat_approve_plea",
+        description="审核通过求情，自动解除禁言并通知用户",
         parameters=[
-            ToolParameterInfo(name="appeal_id", param_type=ToolParamType.STRING, description="申请ID", required=True),
+            ToolParameterInfo(name="plea_id", param_type=ToolParamType.STRING, description="求情ID", required=True),
         ],
     )
-    async def tool_approve_appeal(self, appeal_id: str = "", **kwargs: Any) -> dict[str, Any]:
+    async def tool_approve_plea(self, plea_id: str = "", **kwargs: Any) -> dict[str, Any]:
         del kwargs
-        tool_name = "napcat_approve_appeal"
+        tool_name = "napcat_approve_plea"
         self._ensure_tool_enabled(tool_name)
         try:
-            record = self._appeal_store.get(appeal_id)
+            record = self._plea_store.get(plea_id)
             if not record:
-                raise ValueError(f"未找到申请ID: {appeal_id}")
+                raise ValueError(f"未找到求情ID: {plea_id}")
             if record["status"] != "pending_review" and record["status"] != "open":
-                raise ValueError(f"该申请状态为 {record['status']}，无法审核")
+                raise ValueError(f"该求情状态为 {record['status']}，无法审核")
 
             gid = record["group_id"]
             uid = record["user_id"]
@@ -653,18 +653,18 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                 user_id=uid,
                 duration=0,
             )
-            # 关闭申请
+            # 关闭求情
             record["status"] = "closed"
             record["review_result"] = "approved"
-            self._save_appeal()
+            self._save_plea()
 
-            content = f"已通过群 {gid} 用户 {uid}（{record.get('user_name', uid)}）的申诉（ID={appeal_id}），禁言已解除。{self._action_status_text(result)}"
+            content = f"已通过群 {gid} 用户 {uid}（{record.get('user_name', uid)}）的求情（ID={plea_id}），禁言已解除。{self._action_status_text(result)}"
             return self._success(tool_name, content, data=result)
         except Exception as exc:
-            return self._failure(tool_name, f"审核申诉失败：{exc}")
+            return self._failure(tool_name, f"审核求情失败：{exc}")
 
     async def on_unload(self) -> None:
-        await self._stop_appeal_server()
+        await self._stop_plea_server()
         self.ctx.logger.info("NapCat AI 工具插件已卸载")
 
     async def on_config_update(self, scope: str, config_data: dict[str, Any], version: str) -> None:
@@ -1858,40 +1858,40 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
 
             content = f"已对群 {resolved_group_id} 的成员 {resolved_user_id} {action_text}。{self._action_status_text(raw_result)}"
 
-            # 禁言时自动生成申诉链接
-            appeal_link = ""
-            if normalized_duration > 0 and sys.platform == "linux" and self.config.appeal.enabled:
-                appeal_link = await self._maybe_send_appeal_link(resolved_group_id, resolved_user_id, normalized_duration)
+            # 禁言时自动生成求情链接
+            plea_link = ""
+            if normalized_duration > 0 and sys.platform == "linux" and self.config.plea.enabled:
+                plea_link = await self._maybe_send_plea_link(resolved_group_id, resolved_user_id, normalized_duration)
 
-            if appeal_link:
+            if plea_link:
                 content += (
-                    f"\n【重要】被禁言用户申诉链接: {appeal_link}"
-                    f"\n请务必在回复中告知用户此链接。"
+                    f"\n【重要】被禁言用户求情链接: {plea_link}"
+                    f"\n请务必在回复中告知用户此链接，让用户可以求情解除禁言。"
                 )
 
             return self._success(tool_name, content, data=raw_result)
         except Exception as exc:
             return self._failure(tool_name, f"设置群禁言失败：{exc}")
 
-    async def _maybe_send_appeal_link(self, group_id: str, user_id: str, duration: int) -> str:
-        """生成申诉链接，返回链接字符串。全同步，不调任何 NapCat API。"""
+    async def _maybe_send_plea_link(self, group_id: str, user_id: str, duration: int) -> str:
+        """生成求情链接，返回链接字符串。全同步，不调任何 NapCat API。"""
         try:
-            appeal_id = secrets.token_hex(8)
+            plea_id = secrets.token_hex(8)
             now = datetime.datetime.now().isoformat()
-            self._appeal_store[appeal_id] = {
-                "appeal_id": appeal_id,
+            self._plea_store[plea_id] = {
+                "plea_id": plea_id,
                 "group_id": group_id,
                 "user_id": user_id,
                 "user_name": user_id,
                 "duration": duration,
                 "muted_at": now,
                 "status": "open",
-                "appeal_text": "",
+                "plea_text": "",
                 "review_result": "",
             }
-            self._save_appeal()
-            link = f"http://{self.config.appeal.server_ip}:{self.config.appeal.external_port}/appeal/{appeal_id}"
-            self.ctx.logger.info(f"申诉链接已生成 appeal_id={appeal_id} 群={group_id} 用户={user_id} 时长={duration}秒 → {link}")
+            self._save_plea()
+            link = f"http://{self.config.plea.server_ip}:{self.config.plea.external_port}/plea/{plea_id}"
+            self.ctx.logger.info(f"求情链接已生成 plea_id={plea_id} 群={group_id} 用户={user_id} 时长={duration}秒 → {link}")
             return link
         except Exception:
             return ""
