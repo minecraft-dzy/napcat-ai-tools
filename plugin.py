@@ -102,7 +102,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.5.5", description="配置版本")
+    config_version: str = Field(default="1.5.6", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -138,9 +138,10 @@ class PleaConfig(PluginConfigBase):
     __ui_order__ = 3
 
     enabled: bool = _ui_field("启用禁言求情功能（仅Linux生效）")
-    server_ip: str = Field(default="47.100.213.47", description="求情服务器IP")
-    port: int = Field(default=8090, description="求情服务器端口，0=自动选择")
+    server_ip: str = Field(default="", description="求情服务器的公网IP，留空则不启用求情功能")
+    port: int = Field(default=8090, description="求情服务器监听端口，0=自动选择")
     external_port: int = Field(default=8090, description="对外显示的端口")
+    poll_interval_seconds: int = Field(default=10, description="求情推送间隔（秒），将待处理求情推入群聊供麦麦审核")
 
 
 class UpdateConfig(PluginConfigBase):
@@ -415,13 +416,19 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
     _plea_server: Optional[HTTPServer] = None
     _plea_store_path: Optional[Path] = None
 
+    def _is_plea_enabled(self) -> bool:
+        return (
+            sys.platform == "linux"
+            and self.config.plea.enabled
+            and bool((self.config.plea.server_ip or "").strip())
+        )
+
     async def on_load(self) -> None:
         self.ctx.logger.info("NapCat AI 工具插件已加载")
         self._plea_store_path = Path.cwd() / "data" / "napcat_ai_tools" / "plea_store.json"
         self._plea_store = self._load_plea()
-        if self.config.plea.enabled and sys.platform == "linux":
+        if self._is_plea_enabled():
             threading.Thread(target=self._start_plea_server_sync, daemon=True).start()
-            # 求情轮询：每 10s 把待处理的求情推入群聊供 Maisaka 决策
             threading.Thread(target=_plea_poller_thread, args=(self,), daemon=True).start()
         if self.config.update.check_updates:
             threading.Thread(target=self._update_monitor_thread, daemon=True).start()
@@ -1893,7 +1900,7 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
 
             # 禁言时自动生成求情链接
             plea_link = ""
-            if normalized_duration > 0 and sys.platform == "linux" and self.config.plea.enabled:
+            if normalized_duration > 0 and self._is_plea_enabled():
                 plea_link = await self._maybe_send_plea_link(resolved_group_id, resolved_user_id, normalized_duration)
 
             if plea_link:
@@ -4785,11 +4792,16 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
 
 
 def _plea_poller_thread(plugin: "NapCatAIToolsPlugin") -> None:
-    """每 10s 检查 pending_review 的求情，推入群聊触发 Maisaka。"""
+    """每 N 秒检查 pending_review 的求情，推入群聊触发 Maisaka。"""
     import time as _time
     _time.sleep(15)  # 等 HTTP server 先启动
 
     while True:
+        try:
+            interval = max(5, int(plugin.config.plea.poll_interval_seconds))
+        except Exception:
+            interval = 10
+
         try:
             pending = [
                 (pid, rec)
@@ -4797,7 +4809,7 @@ def _plea_poller_thread(plugin: "NapCatAIToolsPlugin") -> None:
                 if rec.get("status") == "pending_review"
             ]
             if not pending:
-                _time.sleep(10)
+                _time.sleep(interval)
                 continue
 
             for pid, rec in pending:
@@ -4844,9 +4856,9 @@ def _plea_poller_thread(plugin: "NapCatAIToolsPlugin") -> None:
                 except Exception as exc:
                     plugin.ctx.logger.warning(f"[求情轮询] 推送失败 plea_id={pid}: {type(exc).__name__}: {exc}")
 
-            _time.sleep(10)
+            _time.sleep(interval)
         except Exception:
-            _time.sleep(10)
+            _time.sleep(interval)
 
 
 async def _push_plea_msg(plugin: "NapCatAIToolsPlugin", group_id: str, msg: str) -> None:
