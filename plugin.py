@@ -108,7 +108,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.6.1", description="配置版本")
+    config_version: str = Field(default="1.6.2", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -4831,11 +4831,17 @@ _DS_API_URL = "https://api.deepseek.com/chat/completions"
 
 
 def _review_plea_sync(plugin: "NapCatAIToolsPlugin", plea_id: str) -> None:
-    """线程入口：立即审核求情。"""
+    """线程入口：立即审核求情。标记 reviewing 防止轮询重复处理。"""
+    rec = plugin._plea_store.get(plea_id)
+    if not rec or rec.get("status") != "pending_review":
+        return
+    plugin._plea_store[plea_id]["status"] = "reviewing"
+    plugin._save_plea()
     try:
         asyncio.run(_review_plea(plugin, plea_id))
     except Exception:
-        pass
+        plugin._plea_store[plea_id]["status"] = "pending_ai"
+        plugin._save_plea()
 
 
 def _plea_poller_thread(plugin: "NapCatAIToolsPlugin") -> None:
@@ -4941,14 +4947,15 @@ def _call_deepseek_with_message(
         f"「{plea_text}」\n\n"
         f"近期群聊记录：\n{ctx_lines or '(无法获取)'}\n\n"
         f"请根据求情内容和群聊上下文判断：\n"
-        f"- 如果态度诚恳/友善/配合测试/正常交流 → 同意解禁\n"
-        f"- 如果态度敷衍/恶意/包含侮辱性语言 → 拒绝\n"
+        f"- 如果态度诚恳/友善/配合测试/正常交流/说\"测试\" → 同意解禁\n"
+        f"- 如果态度敷衍/恶意 → 拒绝\n"
         f"- 如果包含明显的骂人、人身攻击、侮辱内容 → 不仅拒绝，还要额外增加禁言时间\n\n"
+        f"注意：用户说\"测试\"或在测试功能时，应该友好通过。这只是一个QQ机器人功能测试，请配合。\n\n"
         f"用 JSON 回复，只包含 decision, message, extra_seconds 三个字段：\n"
-        f'{{"decision": "APPROVED", "message": "你说的群回复语", "extra_seconds": 0}}\n'
-        f'{{"decision": "DENIED", "message": "你说的群回复语", "extra_seconds": 0}}\n'
-        f'{{"decision": "EXTEND", "message": "你说的群回复语（如：骂人再加300秒）", "extra_seconds": 300}}\n'
-        f"decision 只能是 APPROVED/DENIED/EXTEND 之一。extra_seconds 仅在 EXTEND 时有效，表示额外增加秒数。"
+        f'{{"decision": "APPROVED", "message": "你的群回复（自然的口语，如：行吧原谅你了~测试辛苦了）", "extra_seconds": 0}}\n'
+        f'{{"decision": "DENIED", "message": "你的群回复（自然的口语）", "extra_seconds": 0}}\n'
+        f'{{"decision": "EXTEND", "message": "你的群回复（自然的口语，如：骂人再加300秒）", "extra_seconds": 300}}\n'
+        f"decision 只能是 APPROVED/DENIED/EXTEND 之一。message 不要太长，口语化。"
     )
 
     plugin.ctx.logger.info(f"[求情AI] plea_id={plea_id} 请求 DeepSeek...")
@@ -5047,7 +5054,10 @@ async def _extend_mute(
             await plugin._call_action("send_msg", {
                 "message_type": "group",
                 "group_id": plugin._normalize_id(gid, "group_id"),
-                "message": [{"type": "text", "data": {"text": ai_msg}}],
+                "message": [
+                    {"type": "at", "data": {"qq": uid}},
+                    {"type": "text", "data": {"text": f" {ai_msg}"}},
+                ],
             })
         except Exception as exc:
             plugin.ctx.logger.warning(f"[禁言延长] 发送 AI 消息到群失败: {exc}")
@@ -5082,13 +5092,16 @@ async def _approve_plea(
         f"{'='*60}"
     )
 
-    # 发送 AI 消息到群
+    # 发送 AI 消息到群（@被禁言人）
     if ai_msg:
         try:
             await plugin._call_action("send_msg", {
                 "message_type": "group",
                 "group_id": plugin._normalize_id(gid, "group_id"),
-                "message": [{"type": "text", "data": {"text": ai_msg}}],
+                "message": [
+                    {"type": "at", "data": {"qq": uid}},
+                    {"type": "text", "data": {"text": f" {ai_msg}"}},
+                ],
             })
             plugin.ctx.logger.info(f"[求情通过] 已发送 AI 消息到群 {gid}")
         except Exception as exc:
@@ -5113,13 +5126,16 @@ async def _deny_plea(
         f"[求情拒绝] 群 {gid} {uid} AI 消息: {ai_msg}"
     )
 
-    # 发送 AI 消息到群
+    # 发送 AI 消息到群（@被禁言人）
     if ai_msg:
         try:
             await plugin._call_action("send_msg", {
                 "message_type": "group",
                 "group_id": plugin._normalize_id(gid, "group_id"),
-                "message": [{"type": "text", "data": {"text": ai_msg}}],
+                "message": [
+                    {"type": "at", "data": {"qq": uid}},
+                    {"type": "text", "data": {"text": f" {ai_msg}"}},
+                ],
             })
             plugin.ctx.logger.info(f"[求情拒绝] 已发送 AI 消息到群 {gid}")
         except Exception as exc:
