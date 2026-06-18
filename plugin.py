@@ -102,7 +102,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _ui_field("启用插件")
-    config_version: str = Field(default="1.5.6", description="配置版本")
+    config_version: str = Field(default="1.5.7", description="配置版本")
 
 
 class BehaviorConfig(PluginConfigBase):
@@ -139,8 +139,8 @@ class PleaConfig(PluginConfigBase):
 
     enabled: bool = _ui_field("启用禁言求情功能（仅Linux生效）")
     server_ip: str = Field(default="", description="求情服务器的公网IP，留空则不启用求情功能")
-    port: int = Field(default=8090, description="求情服务器监听端口，0=自动选择")
-    external_port: int = Field(default=8090, description="对外显示的端口")
+    port: int = Field(default=8190, description="求情服务器监听端口，0=自动选择")
+    external_port: int = Field(default=8190, description="对外显示的端口")
     poll_interval_seconds: int = Field(default=10, description="求情推送间隔（秒），将待处理求情推入群聊供麦麦审核")
 
 
@@ -576,7 +576,7 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
         ip = "0.0.0.0"  # 绑定所有接口，外部通过 server_ip 访问
         port = self.config.plea.port
         display_ip = self.config.plea.server_ip
-        for _ in range(5):
+        for _ in range(20):  # 多试几个端口，NapCat 适配器占用 8090-8099
             try:
                 self._plea_server = HTTPServer((ip, port), _PleaHandler)
                 break
@@ -4826,8 +4826,10 @@ def _plea_poller_thread(plugin: "NapCatAIToolsPlugin") -> None:
                     try:
                         raw = await plugin._call_api(
                             "adapter.napcat.message.get_group_msg_history",
-                            group_id=gid,
-                            count=20,
+                            params={
+                                "group_id": gid,
+                                "count": 20,
+                            },
                         )
                         msgs = _extract_msg_list(raw)
                         ctx_lines = "\n".join(
