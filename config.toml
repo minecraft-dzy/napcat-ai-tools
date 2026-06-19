@@ -1,10 +1,129 @@
 [plugin]
 enabled = true
-config_version = "1.0.0"
+config_version = "1.8.0"
 
 [behavior]
+inject_private_group_context = true
 max_list_items = 30
 max_preview_chars = 4000
+private_context_group_limit = 3
 
 [safety]
 allow_raw_action = true
+url_safety_check = true
+command_confirm_qq = ""
+
+[group_query_tools]
+list_groups = true
+get_group_info = true
+list_group_members = true
+get_group_admins = true
+get_group_member_info = true
+get_group_member_moderation_status = true
+list_group_banned_members = true
+get_group_notices = true
+list_group_requests = true
+get_group_at_all_remain = true
+list_group_essence_messages = true
+get_group_honor_info = true
+check_group_join_status = true
+list_group_join_watches = true
+get_user_group_context = true
+
+[group_manage_tools]
+set_group_ban = true
+kick_group_member = true
+set_group_admin = true
+set_group_add_option = true
+set_group_remark = true
+set_group_card = true
+set_group_special_title = true
+send_group_notice = true
+send_group_sign = true
+set_group_todo = true
+leave_group = true
+handle_group_request = true
+set_group_whole_ban = true
+set_group_name = true
+delete_group_notice = true
+set_essence_message = true
+delete_essence_message = true
+send_poke = true
+watch_group_join_status = true
+remove_group_join_watch = true
+set_group_portrait = true
+at_user = true
+
+[friend_tools]
+list_friends = true
+list_unidirectional_friends = true
+get_user_profile = true
+list_recent_contacts = true
+delete_friend = true
+list_pending_friend_requests = true
+handle_friend_request = true
+list_doubt_friend_requests = true
+handle_doubt_friend_request = true
+set_friend_remark = true
+send_like = true
+
+[message_tools]
+delete_message = true
+get_forward_message = true
+send_forward_message = true
+mark_all_as_read = true
+mark_group_as_read = true
+mark_private_as_read = true
+get_message_detail = true
+set_message_emoji_like = true
+get_message_emoji_likes = true
+fetch_message_emoji_like_detail = true
+ocr_image = true
+get_friend_msg_history = true
+get_group_msg_history = true
+forward_friend_single_msg = true
+forward_group_single_msg = true
+
+[system_tools]
+get_login_info = true
+raw_action = true
+check_url_safely = true
+can_send_image = true
+can_send_record = true
+get_status = true
+get_version_info = true
+get_online_clients = true
+get_user_online_status = true
+
+[profile_ai_tools]
+set_self_profile = true
+set_self_longnick = true
+list_ai_characters = true
+send_group_ai_record = true
+send_cosyvoice_record = true
+siliconflow_api_key = ""
+
+[file_tools]
+download_file = true
+view_file = true
+extract_file = true
+execute_command = true
+fetch_webpage = true
+download_qq_file = true
+
+[update]
+check_updates = true
+skipped_version = ""
+
+[plea]
+enabled = true
+server_ip = "47.100.213.47"
+port = 8090
+external_port = 8090
+poll_interval_seconds = 10
+ai_api_key = ""
+
+[proxy]
+enabled = true
+proxy_url = "http://47.100.213.47:8787"
+proxy_uuid = ""
