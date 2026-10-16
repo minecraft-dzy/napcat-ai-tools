@@ -1,0 +1,16 @@
+{
+  "name": "mc-agent-client",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Headless Minecraft survival bot controlled via HTTP",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "mineflayer": "^4.20.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "mineflayer-collectblock": "^1.4.1",
+    "mineflayer-armor-manager": "^2.0.1"
+  }
+}

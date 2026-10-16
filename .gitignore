@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 *.pyo
 data/
+config_back/
+mc_cores/
+*.log

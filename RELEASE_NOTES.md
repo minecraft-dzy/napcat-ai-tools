@@ -1,3 +1,67 @@
+# v1.9.0 - 群投票 / MC 服务器管理 / 收藏夹 / 外部 planner 补丁 ⚠️ 不稳定版本
+
+> 本版本标注为 **不稳定（Pre-release）**：涉及外部 planner 补丁与较多新功能，建议先在测试环境验证。
+
+## 新增工具（16 个，总计 106 个）
+
+| 工具名 | 说明 |
+|---|---|
+| `group_vote` | 群投票：发布投票消息并贴 👍 计票，达标后自动执行约定操作（如解禁），并通过 `maisaka.external.task` 拉起 planner 处理；投票状态持久化，插件重载后自动恢复 |
+| `napcat_add_favorite` | 收藏消息到麦麦全局收藏夹（所有会话共享） |
+| `napcat_list_favorites` | 查看全局收藏夹列表 |
+| `napcat_send_favorites` | 把收藏合并转发到群里展示 |
+| `napcat_check_mute_status` | 检查群成员是否被禁言及剩余秒数 |
+| `napcat_infinite_ban` | 无限禁言：循环续禁防止他人解封 |
+| `napcat_stop_infinite_ban` | 停止无限禁言循环 |
+| `mc_server_status` | 查看 MC 服务运行状态（Java 进程 / 25565 端口） |
+| `mc_server_start` | 启动 Minecraft 服务端 |
+| `mc_server_stop` | 停止 Minecraft 服务端 |
+| `mc_server_deploy` | 获取 MC 部署指引 |
+| `mc_remote_view_file` | 查看 MC 机器工作目录文件 |
+| `mc_remote_create_file` | 在 MC 机器工作目录创建文件 |
+| `mc_remote_modify_file` | 修改 MC 机器工作目录文件 |
+| `mc_remote_upload_file` | 上传服务器文件到 MC 机器 |
+| `mc_remote_exec` | 在 MC 机器执行 Windows 命令 |
+
+## 功能改进
+
+- **MC 服务器远程管理**：通过 SSH 管理本地 MC 机器（`[minecraft_server]` 配置区），AI 可自助部署/启停/运维 Minecraft 服务端
+- **公网代理服务器**：新增 `proxy_server.py`（FastAPI），为无公网环境提供请求转发、投票/求情数据中转（`[proxy]` / `[plea]` / `[update]` / `[log]` 配置区）
+- **撤职守卫**（`napcat_demotion_guard` 钩子）：管理员身份被撤销后自动拦截后续消息处理，恢复身份后自动解除
+- **CosyVoice2 语音**：`napcat_send_cosyvoice_record` 支持情绪朗读（v1.8.0 引入，本版继续优化）
+- 新增 capabilities 声明：`chat.get_stream_by_group_id`、`maisaka.external.task`
+
+## 主程序补丁（重要）
+
+`patches/` 目录随本版更新，并新增补丁安装工具 `patch_tool.py`：
+
+- **外部 planner 任务支持**：`runtime.py` 新增 `run_external_task()` 接口，`plugin_runtime/capabilities` 注册 `maisaka.external.task` 能力 —— 插件可以拉起一次独立的 planner 处理流程（群投票达标后执行约定操作依赖此补丁）
+- 补丁安装工具特性：
+  - 已安装自动检测并跳过（幂等，可重复执行）
+  - 覆盖前自动备份原文件到 `<MaiBot>/patches_backup/<时间戳>/`
+  - 任一步失败自动回滚全部改动，恢复安装前状态
+  - 支持 `status` / `install` / `uninstall` 子命令
+
+```bash
+cd patches/
+python patch_tool.py install --target /path/to/MaiBot   # 安装（已装自动跳过）
+python patch_tool.py status  --target /path/to/MaiBot   # 查看状态
+python patch_tool.py uninstall --target /path/to/MaiBot # 卸载还原
+```
+
+## 本仓库新增内容
+
+- 收录 **mc_agent v1.0.0** 插件源码（Minecraft 智能体：Mineflayer 无头客户端 + Docker 隔离 + DeepSeek 决策，详见 `mc_agent/`）
+- 同步 v1.9.0 插件完整源码（`plugin.py` / `proxy_server.py` 等）
+
+## 升级说明
+
+1. 覆盖插件目录后热重载自动生效（改过 `_manifest.json` 需重启主程序）
+2. 重新执行 `patches/patch_tool.py install`（已装会自动跳过）
+3. 仓库内 `config.toml` 中的密钥字段已清空，请通过 WebUI 配置面板填写
+
+---
+
 # v0.3.0 - @人功能
 
 ## 新增工具

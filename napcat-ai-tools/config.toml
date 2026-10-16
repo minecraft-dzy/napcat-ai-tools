@@ -1,6 +1,6 @@
 [plugin]
 enabled = true
-config_version = "1.8.0"
+config_version = "1.9.0"
 
 [behavior]
 inject_private_group_context = true
@@ -11,7 +11,8 @@ private_context_group_limit = 3
 [safety]
 allow_raw_action = true
 url_safety_check = true
-command_confirm_qq = ""
+command_confirm_qq = "3939129639"
+demotion_guard = false
 
 [group_query_tools]
 list_groups = true
@@ -53,6 +54,8 @@ watch_group_join_status = true
 remove_group_join_watch = true
 set_group_portrait = true
 at_user = true
+infinite_ban = false
+stop_infinite_ban = true
 
 [friend_tools]
 list_friends = true
@@ -83,6 +86,13 @@ get_friend_msg_history = true
 get_group_msg_history = true
 forward_friend_single_msg = true
 forward_group_single_msg = true
+favorite_add = true
+favorite_send = true
+favorite_list = true
+favorite_max_items = 200
+favorite_send_batch = 50
+favorite_list_limit = 200
+favorite_ack = true
 
 [system_tools]
 get_login_info = true
@@ -111,19 +121,55 @@ execute_command = true
 fetch_webpage = true
 download_qq_file = true
 
+[minecraft_server]
+enabled = true
+host = "122.228.216.76"
+port = 22
+user = "root"
+password = ""
+mc_dir = "/opt/minecraft"
+max_memory = "3G"
+listen_host = "0.0.0.0"
+listen_port = 30001
+read_timeout = 60
+max_memory_gb = 48
+online_day = "Monday"
+
+[minecraft_tools]
+mc_remote_create_file = true
+mc_remote_view_file = true
+mc_remote_modify_file = true
+mc_remote_upload_file = true
+mc_remote_exec = true
+mc_server_deploy = true
+mc_server_start = true
+mc_server_stop = true
+mc_server_status = true
+
 [update]
 check_updates = true
 skipped_version = ""
+auto_update = true
 
 [plea]
 enabled = true
-server_ip = "47.100.213.47"
+server_ip = "101.132.154.198"
 port = 8090
 external_port = 8090
+# 求情兜底轮询间隔（秒）。求情提交后会立即开线程审核，轮询只兜底代理链路上的求情。
 poll_interval_seconds = 10
+# 求情审核 AI（OpenAI 兼容端点），收到求情后立即调用审核
+ai_base_url = "https://api.deepseek.com/v1"
 ai_api_key = ""
+ai_model = "deepseek-flash"
+# 强制发送求情链接到群聊（双重保险）。开启后 bot 直接发 @消息 + AI 也会看到链接转发；
+# 如果出现重复发两次求情链接的情况，请关闭此开关。
+force_send_plea_link = true
 
 [proxy]
 enabled = true
 proxy_url = "http://47.100.213.47:8787"
 proxy_uuid = ""
+
+[log]
+rainbow = true

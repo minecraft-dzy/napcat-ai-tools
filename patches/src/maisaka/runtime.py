@@ -145,6 +145,8 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
         self._jargon_miner = JargonMiner(session_id, session_name=session_name)
 
         self._reasoning_engine = MaisakaReasoningEngine(self)
+        # 外部任务互斥锁：同一 runtime 同时只跑一个插件外部任务，避免多任务并发争抢工具与模型
+        self._external_task_lock = asyncio.Lock()
         self._monitor_session_start_task: Optional[asyncio.Task[None]] = None
         self._tool_registry = ToolRegistry()
         self._reply_effect_tracker = ReplyEffectTracker(
@@ -537,6 +539,159 @@ class MaisakaHeartFlowChatting(MaisakaFocusRuntimeMixin, MaisakaRuntimeDisplayMi
             "task_id": task_id,
             "queued": True,
         }
+
+    async def run_external_task(
+        self,
+        *,
+        plugin_id: str,
+        task_text: str,
+        reason: str = "",
+        metadata: Optional[dict[str, Any]] = None,
+        max_tool_rounds: int = 6,
+        timeout_seconds: float = 120.0,
+    ) -> dict[str, Any]:
+        """执行插件外部任务：以完整上下文与工具链让 Maisaka 处理指定内容，同步返回最终文本结论。
+
+        与 enqueue_proactive_task 的区别：本方法不进入 Timing Gate/主循环状态机、不触发对外回复，
+        而是独立驱动一轮「规划请求 → 工具执行 → 继续规划」的轻量循环，处理结果直接返回给调用方。
+        整个处理过程（任务声明、规划消息、工具结果）会保存到聊天上下文，供后续聊天参考。
+
+        Args:
+            plugin_id: 发起任务的插件标识。
+            task_text: 任务内容描述。
+            reason: 可选的任务说明。
+            metadata: 可选的附加信息，将序列化进任务声明。
+            max_tool_rounds: 工具轮次上限，超出后强制以无工具请求收尾。
+            timeout_seconds: 整体超时秒数。
+
+        Returns:
+            dict[str, Any]: 包含 success/result_text/tool_rounds/tool_invocations/task_id 等字段。
+        """
+
+        normalized_plugin_id = str(plugin_id or "").strip() or "unknown"
+        normalized_task = str(task_text or "").strip()
+        if not normalized_task:
+            raise ValueError("外部任务缺少 task_text")
+
+        task_id = f"external_task:{normalized_plugin_id}:{int(time.time() * 1000)}"
+        detail_lines = [
+            f'<plugin_external_task id="{task_id}" plugin_id="{normalized_plugin_id}">',
+            "【外部任务模式】以下内容由插件发起，是一次后台任务处理请求，不是聊天消息，群友看不到本次处理过程。",
+            f"任务内容：{normalized_task}",
+        ]
+        if reason:
+            detail_lines.append(f"任务说明：{reason}")
+        if metadata:
+            detail_lines.append(f"附加信息：{json.dumps(metadata, ensure_ascii=False, default=str)}")
+        detail_lines.extend(
+            [
+                "处理要求：基于完整上下文与可用工具直接处理任务，可以调用工具查询信息辅助判断；"
+                "不要调用 reply 等对外发言工具；处理完成后直接把最终结论作为文本输出，不要再调用工具收尾。",
+                "</plugin_external_task>",
+            ]
+        )
+        visible_text = "\n".join(detail_lines)
+        # 任务声明写入聊天历史：让后续正常聊天也知道这次外部任务的存在（与 proactive 任务一致）
+        self._chat_history.append(
+            SessionBackedMessage(
+                raw_message=MessageSequence([TextComponent(visible_text)]),
+                visible_text=visible_text,
+                timestamp=datetime.now(),
+                message_id=task_id,
+                source_kind=f"plugin_external_task:{normalized_plugin_id}",
+            )
+        )
+        logger.info(
+            f"{self.log_prefix} 已接收插件外部任务: plugin_id={normalized_plugin_id} task_id={task_id}"
+        )
+
+        # 工具执行上下文所需的锚点消息（仅供上下文使用，不写入消息数据库）
+        anchor_message = self._build_proactive_anchor_message(task_id)
+
+        async def _execute() -> dict[str, Any]:
+            """驱动「规划请求 → 工具执行 → 继续规划」循环，全过程保存到聊天上下文。"""
+
+            # 直接使用真实聊天历史：外部任务的规划消息与工具结果全程写入聊天上下文，
+            # 后续正常聊天可以看到这次任务处理过程
+            working_history = self._chat_history
+            tool_rounds = 0
+            tool_invocations: list[dict[str, Any]] = []
+            final_text = ""
+
+            for round_index in range(max(1, max_tool_rounds) + 1):
+                response = await self._chat_loop_service.chat_loop_step(working_history)
+                working_history.append(response.raw_message)
+                if not response.tool_calls:
+                    final_text = str(response.content or "").strip()
+                    break
+
+                tool_rounds = round_index + 1
+                latest_thought = str(response.content or "")
+                for tool_call in response.tool_calls:
+                    _, result, _ = await self._reasoning_engine._invoke_tool_call(
+                        tool_call,
+                        latest_thought,
+                        anchor_message,
+                        append_history=False,
+                        store_record=False,
+                    )
+                    history_content = self._reasoning_engine._build_tool_result_history_content(tool_call, result)
+                    if not history_content:
+                        history_content = "工具执行成功。" if result.success else f"工具 {tool_call.func_name} 执行失败。"
+                    tool_invocations.append(
+                        {
+                            "tool": tool_call.func_name,
+                            "success": bool(result.success),
+                            "summary": str(history_content)[:200],
+                        }
+                    )
+                    working_history.append(
+                        ToolResultMessage(
+                            content=history_content,
+                            timestamp=datetime.now(),
+                            tool_call_id=tool_call.call_id,
+                            tool_name=tool_call.func_name,
+                            success=result.success,
+                            metadata={},
+                        )
+                    )
+                    logger.info(
+                        f"{self.log_prefix} 外部任务工具执行完成: task_id={task_id} "
+                        f"tool={tool_call.func_name} success={result.success}"
+                    )
+            else:
+                # 工具轮次用尽仍未输出最终文本：强制以无工具请求收尾，保证一定有结论
+                response = await self._chat_loop_service.chat_loop_step(working_history, tool_definitions=[])
+                working_history.append(response.raw_message)
+                final_text = str(response.content or "").strip()
+
+            return {
+                "stream_id": self.session_id,
+                "task_id": task_id,
+                "result_text": final_text,
+                "tool_rounds": tool_rounds,
+                "tool_invocations": tool_invocations,
+            }
+
+        async with self._external_task_lock:
+            try:
+                return await asyncio.wait_for(_execute(), timeout=max(10.0, float(timeout_seconds)))
+            except asyncio.TimeoutError:
+                logger.warning(f"{self.log_prefix} 插件外部任务超时: task_id={task_id} timeout={timeout_seconds}s")
+                return {
+                    "stream_id": self.session_id,
+                    "task_id": task_id,
+                    "success": False,
+                    "error": f"外部任务执行超时（{timeout_seconds} 秒）",
+                }
+            except Exception as exc:
+                logger.warning(f"{self.log_prefix} 插件外部任务执行失败: task_id={task_id} error={exc}")
+                return {
+                    "stream_id": self.session_id,
+                    "task_id": task_id,
+                    "success": False,
+                    "error": str(exc),
+                }
 
     def _build_proactive_anchor_message(self, task_id: str) -> SessionMessage:
         """构造仅供工具上下文使用的主动任务锚点消息，不写入消息数据库。"""

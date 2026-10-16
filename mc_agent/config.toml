@@ -1,0 +1,77 @@
+# MC-Agent 插件配置（runner 会按 config_model 自动补全/规范化并写回）
+
+[plugin]
+enabled = true
+config_version = "1.0.0"
+
+# ===== Minecraft 客户端 =====
+[mc]
+# MC 客户端 Docker 镜像（部署时构建：docker build -t mc-client:latest mc_client/）
+docker_image = "mc-client:latest"
+# 容器内存硬限制
+memory_limit = "1536m"
+memory_swap = "2048m"
+# 插件事件接收 HTTP 服务（机器人容器回调插件）
+plugin_http_port = 31888
+# 机器人控制 HTTP 服务起始端口（多实例自动递增）
+bot_http_port_base = 31889
+# 离线认证模式（原版服务器未开正版验证时为 true）
+offline_mode = true
+# 机器人加入后的自动重连
+auto_reconnect = true
+max_reconnect_attempts = 5
+# 最大同时运行实例数
+max_instances = 3
+# 默认游戏昵称
+default_username = "MaiBotPlayer"
+# 默认 MC 服务器端口
+default_server_port = 25565
+
+# ===== LLM（DeepSeek2 提供商）=====
+[llm]
+# mode=direct 使用下方 DeepSeek2 提供商的 api_key 直连
+# mode=host  使用 MaiBot 主程序配置的模型（需 host_model 指向 DeepSeek2 下挂的模型名）
+mode = "direct"
+api_key = ""
+base_url = "https://api.deepseek.com"
+model = "deepseek-flash"
+host_model = "deepseek-flash"
+temperature = 0.7
+max_tokens = 1024
+# LLM 请求超时（秒）
+timeout = 60
+
+# ===== 群聊上下文 =====
+[context]
+# 启动时拉取的群聊历史条数（作为机器人初始记忆）
+history_limit = 200
+# 群聊消息同步给 MC LLM 的策略: off / at_only / all
+sync_mode = "at_only"
+# at_only 模式外，包含以下关键词的消息也会同步（逗号分隔）
+sync_keywords = ""
+# 注入提示词的上下文最大条数（防止 token 溢出）
+max_context_messages = 50
+
+# ===== 决策与反馈 =====
+[planner]
+# 事件触发决策后，是否把决策结果反馈到群聊
+feedback_to_chat = true
+# 事件是否同时触发 maisaka planner（主程序人格参与评论）
+trigger_maisaka = true
+# 游戏内聊天是否转发到群聊
+relay_game_chat = true
+# 血量低于该值触发低血量事件
+health_low_threshold = 8
+# 定时状态决策间隔（秒），0 = 关闭定时决策
+status_decision_interval = 300
+# 单次决策执行超时（秒）
+decision_timeout = 180
+
+# ===== 内存监控 =====
+[monitor]
+enabled = true
+interval = 60
+# 容器内存告警阈值（MB）
+alert_threshold_mb = 1228
+# 告警最小间隔（秒），防止刷屏
+alert_cooldown = 600

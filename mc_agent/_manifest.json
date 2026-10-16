@@ -1,0 +1,39 @@
+{
+  "manifest_version": 2,
+  "id": "dzy.mc-agent",
+  "version": "1.0.0",
+  "name": "MC-Agent Minecraft 智能体插件",
+  "description": "在群聊中通过 planner 工具启动 Minecraft 客户端（Docker 无头客户端），机器人以真人玩家身份加入原版生存服务器，具备群聊上下文感知、事件驱动决策、自主生存与聊天交互能力。",
+  "author": {
+    "name": "DZY",
+    "url": "https://frpd.fun"
+  },
+  "license": "GPL-v3.0-or-later",
+  "urls": {
+    "repository": "https://frpd.fun",
+    "homepage": "https://frpd.fun"
+  },
+  "host_application": {
+    "min_version": "1.0.0",
+    "max_version": "1.99.99"
+  },
+  "sdk": {
+    "min_version": "2.0.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "send.text",
+    "chat.get_stream_by_group_id",
+    "message.get_recent",
+    "message.build_readable",
+    "llm.generate",
+    "maisaka.context.append",
+    "maisaka.proactive.trigger"
+  ],
+  "plugin_type": "extension",
+  "i18n": {
+    "default_locale": "zh-CN",
+    "supported_locales": ["zh-CN"]
+  }
+}
