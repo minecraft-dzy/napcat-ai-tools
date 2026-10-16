@@ -2,14 +2,14 @@
 
 为 [MaiBot](https://github.com/MaiBot-OpenSource) 提供 NapCat QQ 管理工具集，让 AI 能操作群聊、好友、消息、文件等。
 
-当前版本：**v1.9.0**（106 个工具，含群投票、MC 服务器远程管理、收藏夹、禁言求情等）
+当前版本：**v1.9.2**（106 个工具，含群投票、MC 服务器远程管理、收藏夹、禁言求情等；插件设置里关闭的工具重启后直接不加载，不占用 planner token）
 
 > 本仓库同时收录配套的 **mc_agent** 插件（Minecraft 智能体，见下方说明）和 **MaiBot 主程序补丁**（见 `patches/`）。
 
 ## 仓库结构
 
 ```
-├── plugin.py / _manifest.json / config.toml / proxy_server.py   # napcat-ai-tools 插件源码（v1.9.0）
+├── plugin.py / _manifest.json / config.toml / proxy_server.py   # napcat-ai-tools 插件源码（v1.9.2）
 ├── napcat-ai-tools/                                             # 同上，可直接拷入 plugins/ 的目录版
 ├── mc_agent/                                                    # mc_agent 插件（Minecraft 智能体）
 ├── patches/                                                     # MaiBot 主程序补丁 + 补丁安装工具

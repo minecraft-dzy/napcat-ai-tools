@@ -1,4 +1,4 @@
-# MaiBot 主程序补丁（v1.9.0）
+# MaiBot 主程序补丁（v1.9.2）
 
 本目录存放 napcat-ai-tools / mc_agent 配套的 MaiBot 主程序修改版文件，适配 **MaiBot v1.0.4**。
 
@@ -17,6 +17,7 @@
 | `src/maisaka/runtime.py` | `src/maisaka/` | **新增 `run_external_task()` 外部任务接口（插件触发外部 planner 的核心）** + 外部任务互斥锁 | 必须（外部 planner 功能依赖） |
 | `src/plugin_runtime/capabilities/core.py` | `src/plugin_runtime/capabilities/` | `maisaka.external.task` 能力实现（`_cap_maisaka_external_task`） | 必须（外部 planner 功能依赖） |
 | `src/plugin_runtime/capabilities/registry.py` | `src/plugin_runtime/capabilities/` | 能力注册表加入 `maisaka.external.task` | 必须（外部 planner 功能依赖） |
+| `src/plugin_runtime/integration.py` | `src/plugin_runtime/` | 启动加载插件前检查补丁状态：未安装时打印彩色选择框（方向键选择 不再提醒/安装/取消，Enter 确认，10 秒无操作自动取消），支持用暂存在 `<MaiBot>/patches_tool/` 的载荷离线修复 | 推荐 |
 | `src/maisaka/reasoning_engine.py` | `src/maisaka/` | reply 发送后强制结束循环防重复回复；outbound_send 消息标记 is_self_message | 强烈推荐 |
 | `src/maisaka/builtin_tool/context.py` | `src/maisaka/builtin_tool/` | outbound_send 消息标记 is_self_message | 强烈推荐 |
 | `src/maisaka/builtin_tool/query_jargon.py` | `src/maisaka/builtin_tool/` | 同参数重复调用拦截，防止死循环 | 强烈推荐 |
@@ -67,6 +68,18 @@ cp -r patches/prompts/* /path/to/MaiBot/prompts/
 - **自言自语**：可能回复自己发出的消息
 - **死循环**：query_jargon / query_memory 反复查同一词条
 - **工具搜不到**：'检查链接安全' 这种自然语言搜不到工具
+
+## 启动补丁提醒
+
+安装 `integration.py` 补丁后，主程序每次启动加载插件前会检查补丁状态：
+
+- 补丁齐全 → 静默通过，不弹任何提示
+- 有补丁缺失或被外部改动 → 在终端打印彩色选择框：**不再提醒 / 立即安装 / 取消**，方向键（↑/↓/k/j）或数字键移动，Enter 确认
+- 选「立即安装」会直接调用暂存在 `<MaiBot>/patches_tool/` 的补丁载荷离线完成安装（无需仓库和网络）
+- **10 秒无按键自动视为取消**，不影响正常启动；非交互终端（无 TTY）只打印一行提示
+- 选过「不再提醒」后写入 `<MaiBot>/.napcat-ai-tools-patches-skip`，之后启动静默；补丁出现新漂移时会重新提醒
+
+`patch_tool.py install` 成功后会自动把整套补丁文件与 patch_tool.py 暂存到 `<MaiBot>/patches_tool/`，供上述选择框离线修复使用。
 
 ## 注意事项
 

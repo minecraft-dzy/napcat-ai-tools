@@ -64,6 +64,11 @@ PATCHES: List[Dict[str, str]] = [
         "source": "src/plugin_runtime/capabilities/registry.py",
         "desc": "能力注册表加入 maisaka.external.task",
     },
+    {
+        "target": "src/plugin_runtime/integration.py",
+        "source": "src/plugin_runtime/integration.py",
+        "desc": "启动加载插件前检查补丁状态：未安装时显示彩色选择框（方向键选择 安装/取消/不再提醒，10 秒无操作自动取消）",
+    },
     # --- 防死循环 / 工具搜索兜底 ---
     {
         "target": "src/maisaka/builtin_tool/context.py",
@@ -254,6 +259,29 @@ class PatchTool:
             print(f"有 {counts['not_installed']} 个补丁未安装，执行 install 命令安装。")
         return 1
 
+    def _stage_payload_for_startup(self) -> Optional[str]:
+        """把补丁工具与补丁文件复制到 <root>/patches_tool/。
+
+        启动时的补丁提醒选择框（integration.py 补丁）会在离线状态下调用这里的
+        patch_tool.py 完成安装/修复，因此安装成功后把整套载荷暂存一份。
+        """
+
+        try:
+            self_file = Path(__file__).resolve()
+            dest_root = self.root / "patches_tool"
+            dest_root.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(self_file, dest_root / self_file.name)
+            for entry in PATCHES:
+                src = self.patches_dir / entry["source"]
+                if not src.is_file():
+                    continue
+                dest = dest_root / entry["source"]
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest)
+            return str(dest_root)
+        except Exception:
+            return None
+
     def install(self) -> int:
         print(f"MaiBot 主程序根目录: {self.root}")
         todo: List[Dict[str, str]] = []
@@ -288,6 +316,9 @@ class PatchTool:
                     }
                 self.state = {"installed_at": time.strftime("%Y-%m-%d %H:%M:%S"), "files": files}
                 self.save_state(None)
+                staged = self._stage_payload_for_startup()
+                if staged:
+                    print(f"补丁载荷已暂存到 {staged}（供启动提醒选择框离线修复使用）")
                 print("\n所有补丁均已安装（此前无安装记录），已补写状态文件，无需操作。")
             else:
                 print("\n所有补丁均已安装，无需操作。")
@@ -339,6 +370,9 @@ class PatchTool:
             }
         self.state = {"installed_at": time.strftime("%Y-%m-%d %H:%M:%S"), "files": files}
         self.save_state(str(backup_dir))
+        staged = self._stage_payload_for_startup()
+        if staged:
+            print(f"补丁载荷已暂存到 {staged}（供启动提醒选择框离线修复使用）")
         print(f"\n安装完成，共 {len(self._processed)} 个文件。状态已写入 {self.state_path}")
         print("提示：改动涉及 Python 源码，请重启 MaiBot 主程序后生效。")
         return 0

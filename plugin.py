@@ -201,6 +201,7 @@ class GroupQueryToolConfig(PluginConfigBase):
     get_group_member_info: bool = _ui_field("获取群成员资料与权限")
     get_group_member_moderation_status: bool = _ui_field("检查某成员的禁言状态")
     list_group_banned_members: bool = _ui_field("获取群禁言名单")
+    check_mute_status: bool = _ui_field("检查成员是否被禁言及剩余秒数")
     get_group_notices: bool = _ui_field("获取群公告列表")
     list_group_requests: bool = _ui_field("查看群申请或邀请记录")
     get_group_at_all_remain: bool = _ui_field("获取 @全体成员 剩余次数")
@@ -789,6 +790,8 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
 
         SDK 装饰器把 visibility 等自定义 kwargs 存进 ComponentInfo.metadata（内层 dict），
         而宿主读取的是 model_dump 后的外层 metadata，这里手动拍平保证 visibility 生效。
+        另外插件设置里关闭的工具在此直接不注册（重启后生效），
+        planner 看不到这些工具，避免占用输入 token。
         """
         components = super().get_components()
         for comp in components:
@@ -796,6 +799,31 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
             if isinstance(metadata, dict) and isinstance(metadata.get("metadata"), dict):
                 inner_metadata = metadata.pop("metadata")
                 metadata.update(inner_metadata)
+        # 过滤掉在插件设置中关闭的工具：不注册 → 不进入 planner 的工具列表
+        config = getattr(self, "config", None)
+        if config is not None:
+            disabled: list[str] = []
+            for comp in components:
+                if comp.get("type") != "TOOL":
+                    continue
+                name = str(comp.get("name") or "")
+                switch = _TOOL_SWITCH_ATTRS.get(name)
+                if not switch:
+                    continue
+                section_name, attr = switch
+                section = getattr(config, section_name, None)
+                if section is not None and not getattr(section, attr, True):
+                    disabled.append(name)
+            if disabled:
+                disabled_set = set(disabled)
+                components = [c for c in components if str(c.get("name") or "") not in disabled_set]
+                try:
+                    self.ctx.logger.info(
+                        f"{len(disabled)} 个工具已在插件设置中关闭，本次启动不加载（不占用 planner token）："
+                        f"{', '.join(sorted(disabled_set))}"
+                    )
+                except Exception:
+                    pass
         return components
 
     async def on_load(self) -> None:

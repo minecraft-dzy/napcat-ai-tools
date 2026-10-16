@@ -1,3 +1,30 @@
+# v1.9.2 - 启动补丁提醒选择框 / 关闭工具不再加载 ⚠️ 不稳定版本
+
+> 本版本标注为 **不稳定（Pre-release）**，无新增工具，聚焦补丁体验与 planner token 优化。
+
+## 主程序补丁新增
+
+- **启动补丁提醒选择框**（新增 `integration.py` 补丁）：主程序启动加载插件前检查补丁状态，有补丁缺失或被外部改动时在终端用字符打印彩色选择框
+  - 选项：**不再提醒 / 立即安装 / 取消**，方向键（↑/↓/k/j）或数字键移动，Enter 确认，Esc/Ctrl+C 取消
+  - **10 秒无按键自动视为取消**，不影响正常启动
+  - 无键盘输入的终端（非 TTY）自动降级为一行提示，不弹框不阻塞
+  - 选「立即安装」直接调用暂存在 `<MaiBot>/patches_tool/` 的补丁载荷离线完成安装，无需仓库和网络
+  - 补丁齐全或选过「不再提醒」时静默通过；补丁出现新漂移会重新提醒
+- `patch_tool.py install` 成功后自动把整套补丁文件与 patch_tool.py 暂存到 `<MaiBot>/patches_tool/`，供启动选择框离线修复使用
+
+## 插件改进
+
+- **插件设置里关闭的工具，重启后直接不加载**：`get_components()` 注册阶段即过滤掉开关为 False 的 TOOL 类型组件，planner 完全看不到这些工具，**不再占用 planner 输入 token**（Hook / Command / EventHandler 等其他组件类型不受影响）
+- 补全配置模型缺失的 `check_mute_status` 开关字段（v1.9.0 遗留）
+
+## 升级说明
+
+1. 覆盖插件目录后热重载自动生效（改过 `_manifest.json` 需重启主程序）
+2. 重新执行 `patches/patch_tool.py install`（已装其他补丁的会增量安装新的 integration.py 补丁）
+3. 想要启动提醒功能必须安装 `integration.py` 补丁（`patch_tool.py status` 可查看）
+
+---
+
 # v1.9.0 - 群投票 / MC 服务器管理 / 收藏夹 / 外部 planner 补丁 ⚠️ 不稳定版本
 
 > 本版本标注为 **不稳定（Pre-release）**：涉及外部 planner 补丁与较多新功能，建议先在测试环境验证。
