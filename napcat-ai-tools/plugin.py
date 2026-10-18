@@ -3407,23 +3407,45 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
         except Exception as exc:
             return self._failure(tool_name, f"停止无限禁言失败：{exc}")
 
-    async def _is_plea_target_friend(self, user_id: str) -> bool:
-        """检查被禁言用户是否在好友列表中（决定求情验证码能否私聊送达）。
+    @staticmethod
+    def _friend_entries_include(entries: Any, user_id: str) -> bool:
+        """判断好友类列表（好友 / 单向好友）中是否包含指定 QQ。"""
+        items = entries
+        if isinstance(items, dict):
+            for key in ("data", "items", "list"):
+                value = items.get(key)
+                if isinstance(value, list):
+                    items = value
+                    break
+        if not isinstance(items, list):
+            return False
+        target = str(user_id or "").strip()
+        if not target:
+            return False
+        for entry in items:
+            if not isinstance(entry, dict):
+                continue
+            fid = str(entry.get("user_id") or entry.get("uin") or "").strip()
+            if fid and fid == target:
+                return True
+        return False
 
-        好友列表获取失败时保守返回 True：仍尝试发私聊，由发送异常兜底降级免验证码。
+    async def _is_plea_target_friend(self, user_id: str) -> bool:
+        """检查被禁言用户是否可私聊送达（决定求情验证码能否私聊发送）。
+
+        双向好友与单向好友（对方单向添加了麦麦）都能收到麦麦的私聊消息，
+        因此两者都视为可发送；列表获取失败时保守返回 True，由发送异常兜底降级免验证码。
         """
         try:
             friends = await self._call_api("adapter.napcat.account.get_friend_list", no_cache=True)
-            if isinstance(friends, list):
-                for friend in friends:
-                    if not isinstance(friend, dict):
-                        continue
-                    fid = str(friend.get("user_id") or friend.get("uin") or "").strip()
-                    if fid and fid == user_id:
-                        return True
+            if self._friend_entries_include(self._extract_data(friends), user_id):
+                return True
+            unidirectional = await self._call_api("adapter.napcat.account.get_unidirectional_friend_list")
+            if self._friend_entries_include(self._extract_data(unidirectional), user_id):
+                return True
             return False
         except Exception as exc:
-            self._log.warning(f"[求情] 好友列表获取失败，默认仍尝试发送验证码: {exc}")
+            self._log.warning(f"[求情] 好友/单向好友列表获取失败，默认仍尝试发送验证码: {exc}")
             return True
 
     async def _maybe_send_plea_link(self, group_id: str, user_id: str, duration: int) -> str:
@@ -3460,7 +3482,7 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
                     self._log.warning(f"[求情] 推送到代理失败（代理链接可能打不开）: {exc}")
             else:
                 link = ""
-            # 先检查好友关系：非好友私聊必然送不到，直接免验证码（避免"明明没收到还要验证码"）
+            # 先检查好友关系：非好友也非单向好友的私聊必然送不到，直接免验证码（避免"明明没收到还要验证码"）
             is_friend = await self._is_plea_target_friend(user_id)
             if is_friend:
                 try:
@@ -3479,7 +3501,7 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
             else:
                 record["need_verify"] = False
                 self._save_plea()
-                self._log.warning(f"[求情] {user_id} 不是好友，私聊无法送达验证码，该求情免验证码 plea_id={plea_id}")
+                self._log.warning(f"[求情] {user_id} 既非好友也非单向好友，私聊无法送达验证码，该求情免验证码 plea_id={plea_id}")
             self._log.info(f"求情链接已生成 plea_id={plea_id} 群={group_id} 用户={user_id} 时长={duration}秒 → {link}")
             return link
         except Exception:
