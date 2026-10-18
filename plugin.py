@@ -177,6 +177,20 @@ class ProxyConfig(PluginConfigBase):
     proxy_uuid: str = Field(default="", description="代理 UUID，留空则自动注册（首次启动自动生成并持久化）")
 
 
+class RequestReviewConfig(PluginConfigBase):
+    """加好友 / 群邀请 / 加群申请自动审核配置。"""
+
+    __ui_label__ = "请求审核"
+    __ui_icon__ = "users"
+    __ui_order__ = 5
+
+    auto_review: bool = _ui_field("自动审核加好友、被拉进群、他人加群申请（调用 planner 判断）")
+    review_friend_request: bool = _ui_field("审核加好友请求")
+    review_group_invite: bool = _ui_field("审核被拉进群请求（群邀请）")
+    review_group_join: bool = _ui_field("审核他人加群申请（新成员入群请求）")
+    max_review_records: int = Field(default=200, description="请求审核去重记录最多保留条数")
+
+
 class UpdateConfig(PluginConfigBase):
     __ui_label__ = "更新"
     __ui_icon__ = "rocket"
@@ -739,6 +753,7 @@ class NapCatAIToolsConfig(PluginConfigBase):
     update: UpdateConfig = Field(default_factory=UpdateConfig)
     plea: PleaConfig = Field(default_factory=PleaConfig)
     proxy: ProxyConfig = Field(default_factory=ProxyConfig)
+    request_review: RequestReviewConfig = Field(default_factory=RequestReviewConfig)
     log: LogConfig = Field(default_factory=LogConfig)
 
 
@@ -767,6 +782,7 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
     _infinite_ban_tasks: dict[str, asyncio.Task[Any]] = {}
     _demotion_guard_active: bool = False
     _known_admin_groups: set[str] = set()  # 曾经是 admin/owner 的群号集合
+    _request_review_inflight: set[str] = set()  # 正在审核中的请求 flag，避免重复触发 planner
 
     # ---- MC WS 服务端 ----
     _mc_ws_client: Optional[Any] = None           # 已连接的本地 PC websocket
@@ -2305,6 +2321,149 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
             items = [item for item in items if str(item.get("status") or "").strip() == "pending"]
         items.sort(key=lambda item: int(item.get("updated_at") or item.get("created_at") or 0), reverse=True)
         return items
+
+    # ---- 加好友 / 群邀请 / 加群申请：自动审核（调用 planner）----
+
+    def _request_review_file(self) -> Path:
+        state_dir = Path.cwd() / "data" / "napcat_ai_tools"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        return state_dir / "request_review_state.json"
+
+    def _load_request_review_state(self) -> dict[str, Any]:
+        path = self._request_review_file()
+        if not path.exists():
+            return {"reviewed": {}}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            self._log.warning(f"读取请求审核状态失败，将重置状态文件: {exc}")
+            return {"reviewed": {}}
+        reviewed = payload.get("reviewed")
+        if not isinstance(reviewed, dict):
+            return {"reviewed": {}}
+        return {"reviewed": {str(key): value for key, value in reviewed.items() if isinstance(value, dict)}}
+
+    def _save_request_review_state(self, state: dict[str, Any]) -> None:
+        try:
+            path = self._request_review_file()
+            path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as exc:
+            self._log.warning(f"保存请求审核状态失败: {exc}")
+
+    def _is_request_reviewed(self, flag: str) -> bool:
+        normalized_flag = str(flag or "").strip()
+        if not normalized_flag:
+            return False
+        return normalized_flag in self._load_request_review_state()["reviewed"]
+
+    def _mark_request_reviewed(self, flag: str, kind: str, status: str = "reviewing") -> None:
+        normalized_flag = str(flag or "").strip()
+        if not normalized_flag:
+            return
+        state = self._load_request_review_state()
+        reviewed = state["reviewed"]
+        reviewed[normalized_flag] = {
+            "kind": str(kind or "").strip(),
+            "status": str(status or "").strip(),
+            "updated_at": int(time.time()),
+        }
+        limit = max(10, int(getattr(self.config.request_review, "max_review_records", 200) or 200))
+        if len(reviewed) > limit:
+            # dict 保持插入顺序：超限时丢弃最早写入的记录，保证保留最新的
+            for key in list(reviewed.keys())[: len(reviewed) - limit]:
+                del reviewed[key]
+        self._save_request_review_state(state)
+
+    async def _resolve_request_stream_id(self, *, group_id: str, session_id: str) -> str:
+        """优先用群号解析出已有聊天流；解析不到再退回事件自带的 session_id。"""
+        normalized_group_id = str(group_id or "").strip()
+        if normalized_group_id.isdigit():
+            stream_id = await _resolve_group_stream_id(self, normalized_group_id)
+            if stream_id:
+                return stream_id
+        return str(session_id or "").strip()
+
+    async def _review_request_with_planner(
+        self,
+        *,
+        kind: str,
+        flag: str,
+        payload: dict[str, Any],
+        message_info: dict[str, Any],
+        session_id: str,
+    ) -> None:
+        """把一条加好友 / 群邀请 / 加群申请交给 planner 审核，由 planner 自行调用工具决定通过或拒绝。"""
+        try:
+            user_id = str(payload.get("user_id") or "").strip()
+            comment = str(payload.get("comment") or "").strip()
+            group_id = str(payload.get("group_id") or "").strip()
+            user_info = message_info.get("user_info") or {}
+            group_info = message_info.get("group_info") or {}
+            nickname = str(user_info.get("user_nickname") or "").strip() or user_id
+            group_name = str(group_info.get("group_name") or "").strip() or group_id
+            comment_text = comment or "（无）"
+
+            if kind == "friend":
+                task_text = (
+                    f"【好友申请审核】{nickname}（{user_id}）申请加你为好友。\n"
+                    f"验证消息：{comment_text}\n"
+                    f"请求标识 flag：{flag}\n"
+                    "请结合上下文判断是否同意：同意就调用 napcat_handle_friend_request(flag=..., approve=true, remark=...)，"
+                    "拒绝就调用 napcat_handle_friend_request(flag=..., approve=false)。完成后用一句话说明你的决定和理由。"
+                )
+            elif kind == "group_invite":
+                task_text = (
+                    f"【群邀请审核】{nickname}（{user_id}）邀请你加入群 {group_name}（{group_id}）。\n"
+                    f"附加消息：{comment_text}\n"
+                    f"请求标识 flag：{flag}（sub_type=invite）\n"
+                    "请判断是否接受邀请：无论接受还是拒绝都调用 "
+                    f"napcat_handle_group_request(flag=..., approve=..., sub_type=\"invite\", group_id=\"{group_id}\", "
+                    f"group_name=\"{group_name}\")。完成后用一句话说明你的决定和理由。"
+                )
+            else:
+                task_text = (
+                    f"【加群申请审核】{nickname}（{user_id}）申请加入群 {group_name}（{group_id}）。\n"
+                    f"验证消息：{comment_text}\n"
+                    f"请求标识 flag：{flag}（sub_type=add）\n"
+                    "请结合上下文判断是否同意其入群：无论同意还是拒绝都调用 "
+                    f"napcat_handle_group_request(flag=..., approve=..., sub_type=\"add\", group_id=\"{group_id}\", "
+                    f"group_name=\"{group_name}\")。完成后用一句话说明你的决定和理由。"
+                )
+
+            stream_id = await self._resolve_request_stream_id(group_id=group_id, session_id=session_id)
+            if not stream_id:
+                self._log.warning(f"[请求审核] 未解析到可用聊天流，跳过审核 kind={kind} flag={flag}")
+                self._mark_request_reviewed(flag, kind, status="no_stream")
+                return
+
+            result = await self.ctx.call_capability(
+                "maisaka.external.task",
+                timeout_ms=115000,
+                stream_id=stream_id,
+                task_text=task_text,
+                reason=f"{kind} 请求自动审核（flag={flag}）",
+                metadata={
+                    "source": "request_auto_review",
+                    "kind": kind,
+                    "flag": flag,
+                    "user_id": user_id,
+                    "group_id": group_id,
+                },
+            )
+            if isinstance(result, dict) and result.get("success"):
+                text = str(result.get("result_text") or "").strip()
+                self._log.info(
+                    f"[请求审核] {kind} flag={flag} 审核完成 工具轮次={result.get('tool_rounds', 0)} 结论: {text[:200]}"
+                )
+                self._mark_request_reviewed(flag, kind, status="done")
+            else:
+                detail = str(result.get("error") or result)[:200] if isinstance(result, dict) else str(result)[:200]
+                self._log.warning(f"[请求审核] {kind} flag={flag} 审核失败：{detail}")
+                self._mark_request_reviewed(flag, kind, status="failed")
+        except Exception as exc:
+            self._log.warning(f"[请求审核] {kind} flag={flag} 审核异常：{exc}")
+        finally:
+            self._request_review_inflight.discard(str(flag or "").strip())
 
     def _group_contact_file(self) -> Path:
         state_dir = Path.cwd() / "data" / "napcat_ai_tools"
@@ -6623,6 +6782,69 @@ class NapCatAIToolsPlugin(MaiBotPlugin):
             changed = True
         if changed:
             self._save_friend_request_state(state)
+        return True, True, None, None, None
+
+    @EventHandler("napcat_request_auto_review", description="监听加好友、群邀请、加群申请并调用 planner 审核", event_type=EventType.ON_MESSAGE)
+    async def handle_request_auto_review(self, message: Any = None, **kwargs: Any):
+        del kwargs
+        if not isinstance(message, dict) or not message.get("is_notify"):
+            return True, True, None, None, None
+
+        message_info = message.get("message_info") or {}
+        additional_config = message_info.get("additional_config") or {}
+        if str(additional_config.get("napcat_post_type") or "").strip() != "request":
+            return True, True, None, None, None
+
+        request_config = getattr(self.config, "request_review", None)
+        if request_config is None or not request_config.auto_review:
+            return True, True, None, None, None
+
+        payload = additional_config.get("napcat_request_payload") or {}
+        if not isinstance(payload, dict):
+            return True, True, None, None, None
+
+        flag = str(payload.get("flag") or "").strip()
+        if not flag:
+            return True, True, None, None, None
+
+        request_type = str(additional_config.get("napcat_request_type") or "").strip()
+        sub_type = str(payload.get("sub_type") or "").strip().lower()
+        if request_type == "friend":
+            if not request_config.review_friend_request:
+                return True, True, None, None, None
+            kind = "friend"
+        elif request_type == "group":
+            if sub_type == "invite":
+                if not request_config.review_group_invite:
+                    return True, True, None, None, None
+                kind = "group_invite"
+            elif sub_type == "add":
+                if not request_config.review_group_join:
+                    return True, True, None, None, None
+                kind = "group_join"
+            else:
+                return True, True, None, None, None
+        else:
+            return True, True, None, None, None
+
+        if flag in self._request_review_inflight or self._is_request_reviewed(flag):
+            return True, True, None, None, None
+
+        self._request_review_inflight.add(flag)
+        self._mark_request_reviewed(flag, kind, status="reviewing")
+        try:
+            asyncio.create_task(
+                self._review_request_with_planner(
+                    kind=kind,
+                    flag=flag,
+                    payload=payload,
+                    message_info=message_info,
+                    session_id=str(message.get("session_id") or "").strip(),
+                )
+            )
+        except Exception as exc:
+            self._request_review_inflight.discard(flag)
+            self._log.warning(f"[请求审核] 调度审核任务失败 kind={kind} flag={flag}: {exc}")
         return True, True, None, None, None
 
     # ===== 文件与执行工具 =====

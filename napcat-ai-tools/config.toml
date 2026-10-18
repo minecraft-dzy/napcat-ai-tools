@@ -171,5 +171,14 @@ enabled = true
 proxy_url = "http://47.100.213.47:8787"
 proxy_uuid = ""
 
+# 加好友 / 群邀请 / 加群申请自动审核：检测到请求就调用 planner 判断是否通过。
+# 注意：每次审核都会发起一次 planner 任务，频繁收到请求时可能占用较多输入 token。
+[request_review]
+auto_review = true
+review_friend_request = true
+review_group_invite = true
+review_group_join = true
+max_review_records = 200
+
 [log]
 rainbow = true
